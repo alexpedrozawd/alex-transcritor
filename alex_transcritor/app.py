@@ -1,0 +1,72 @@
+import shutil
+import sys
+from pathlib import Path
+
+from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+
+from .constants import SOCKET_NAME, WHISPER_BIN
+from .ui.main_window import MainWindow
+
+
+def _check_dependencies() -> list[str]:
+    missing = []
+    for cmd in ("ffmpeg", "pactl"):
+        if not shutil.which(cmd):
+            missing.append(cmd)
+    if not Path(WHISPER_BIN).exists():
+        missing.append("whisper (ambiente virtual)")
+    return missing
+
+
+def _is_already_running() -> bool:
+    socket = QLocalSocket()
+    socket.connectToServer(SOCKET_NAME)
+    connected = socket.waitForConnected(300)
+    if connected:
+        socket.write(b"show")
+        socket.flush()
+    socket.close()
+    return connected
+
+
+def _on_new_connection(server: QLocalServer, window: MainWindow) -> None:
+    conn = server.nextPendingConnection()
+    if conn:
+        conn.waitForReadyRead(300)
+        window._show_window()
+        conn.disconnectFromServer()
+
+
+def main() -> None:
+    app = QApplication(sys.argv)
+    app.setApplicationName("alex-transcritor")
+    app.setDesktopFileName("alex-transcritor")
+    app.setQuitOnLastWindowClosed(True)
+
+    if _is_already_running():
+        sys.exit(0)
+
+    missing = _check_dependencies()
+    if missing:
+        warn = QMessageBox()
+        warn.setWindowTitle("Dependências ausentes")
+        warn.setIcon(QMessageBox.Icon.Warning)
+        warn.setText(
+            "As seguintes dependências não foram encontradas:\n\n"
+            + "\n".join(f"  • {m}" for m in missing)
+            + "\n\nO app pode não funcionar corretamente.\n"
+            "Consulte o manual de instalação."
+        )
+        warn.exec()
+
+    server = QLocalServer()
+    QLocalServer.removeServer(SOCKET_NAME)
+    server.listen(SOCKET_NAME)
+
+    window = MainWindow()
+    window.show()
+
+    server.newConnection.connect(lambda: _on_new_connection(server, window))
+
+    sys.exit(app.exec())

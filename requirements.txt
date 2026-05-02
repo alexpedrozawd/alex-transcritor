@@ -1,0 +1,4 @@
+# Dependências de produção
+# Testado com: PyQt6==6.11.0, openai-whisper==20250625
+PyQt6>=6.7.0
+openai-whisper>=20240930

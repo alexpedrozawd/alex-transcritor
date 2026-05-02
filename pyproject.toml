@@ -1,0 +1,17 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["alex_transcritor"]
+concurrency = ["thread"]
+omit = ["alex_transcritor/app.py"]  # entry point — requer display real
+
+[tool.coverage.report]
+show_missing = true
+
+[tool.bandit]
+# Falsos positivos aceitos para um app desktop Linux:
+# B404 — import subprocess é intencional e necessário
+# B603 — subprocess sem shell=True é a forma SEGURA (usamos lista de args)
+# B607 — ffmpeg/pactl/xdg-open devem estar no PATH do sistema
+skips = ["B404", "B603", "B607"]
