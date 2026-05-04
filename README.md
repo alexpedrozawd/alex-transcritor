@@ -1,85 +1,81 @@
 # Alex Transcritor
 
-Aplicativo desktop Linux para **gravação e transcrição automática de áudio** usando [OpenAI Whisper](https://github.com/openai/whisper).
+A lightweight Linux desktop app for **automatic audio recording and transcription** using [OpenAI Whisper](https://github.com/openai/whisper). Fully offline — no API keys, no cloud, no subscriptions.
 
 ---
 
-## O que faz
+## What it does
 
-- Grava o áudio do sistema (monitor PulseAudio/PipeWire) via FFmpeg
-- Transcreve automaticamente em português usando Whisper (modelo `small`)
-- Interface gráfica minimalista com tema escuro
-- Fica na bandeja do sistema (system tray) quando minimizado
-- Lembra o último diretório de saída usado
-- Detecta automaticamente o dispositivo de áudio disponível
+- Captures system audio (PulseAudio/PipeWire monitor source) via FFmpeg
+- Transcribes automatically using Whisper (`small` model)
+- Minimal dark-themed GUI with system tray support
+- Remembers the last output directory
+- Auto-detects the available audio monitor device
 
-## Requisitos de sistema
+## System requirements
 
-| Requisito | Versão mínima |
+| Requirement | Minimum version |
 |---|---|
 | Linux (Ubuntu, Debian, Fedora, Arch, etc.) | — |
 | Python | 3.10+ |
-| FFmpeg | qualquer versão moderna |
-| PulseAudio ou PipeWire | com `pactl` disponível |
-| Espaço em disco | ~500 MB (venv + modelo Whisper) |
+| FFmpeg | any modern version |
+| PulseAudio or PipeWire | with `pactl` available |
+| Disk space | ~500 MB (venv + Whisper model) |
 
-## Instalação rápida
+## Installation
 
 ```bash
-git clone <repositório> alex-transcritor
+git clone https://github.com/alexpedrozawd/alex-transcritor
 cd alex-transcritor
-bash install.sh
+chmod +x install.sh && bash install.sh
 ```
 
-O instalador cuida de tudo: dependências do sistema, ambiente Python, Whisper e integração com o menu de aplicativos.
+The installer handles everything: system dependencies, Python virtual environment, Whisper model download, and desktop menu integration.
 
-Consulte o [Manual do Usuário](docs/MANUAL_USUARIO.md) para instruções detalhadas passo a passo.
+See the [User Manual](docs/MANUAL_USUARIO.md) for detailed step-by-step instructions.
 
-## Como usar
+## How to use
 
-1. Abra o app pelo menu de aplicativos ou digitando `alex-transcritor` no terminal
-2. Na primeira execução: clique com o botão direito no ícone do tray → **Configurações** → selecione o dispositivo de áudio
-3. Digite o nome do arquivo e escolha o diretório de saída
-4. Clique **Gravar** → quando terminar, clique **Parar**
-5. Aguarde a transcrição — os botões **Áudio** e **Texto** aparecerão quando concluída
+1. Launch the app from the application menu or by typing `alex-transcritor` in the terminal
+2. On first run: right-click the tray icon → **Settings** → select your audio device
+3. Enter a file name and choose an output directory
+4. Click **Record** → when done, click **Stop**
+5. Wait for transcription — **Audio** and **Text** buttons will appear once complete
 
-## Estrutura do projeto
+## Project structure
 
 ```
 alex-transcritor/
-├── alex_transcritor/      ← pacote Python principal
-│   ├── app.py             ← ponto de entrada e verificação de deps
-│   ├── config.py          ← configuração e detecção de áudio
-│   ├── constants.py       ← caminhos e constantes
-│   ├── worker.py          ← thread de transcrição (Whisper)
-│   └── ui/                ← componentes de interface
-├── tests/                 ← suite de testes (65 testes, 100% cobertura)
-├── assets/                ← ícone da aplicação
-├── scripts/               ← utilitários (geração de ícone)
-├── docs/                  ← manuais
-├── main.py                ← entry point (3 linhas)
-├── install.sh             ← instalador
-├── uninstall.sh           ← desinstalador
-├── requirements.txt       ← dependências de produção
-└── requirements-dev.txt   ← dependências de desenvolvimento
+├── alex_transcritor/      ← main Python package
+│   ├── app.py             ← entry point and dependency check
+│   ├── config.py          ← configuration and audio detection
+│   ├── constants.py       ← paths and constants
+│   ├── worker.py          ← transcription thread (Whisper)
+│   └── ui/                ← interface components
+├── tests/                 ← test suite (65 tests, 100% coverage)
+├── assets/                ← application icon
+├── scripts/               ← utilities (icon generation)
+├── docs/                  ← user and developer manuals
+├── main.py                ← entry point (3 lines)
+├── install.sh             ← installer
+├── uninstall.sh           ← uninstaller
+├── requirements.txt       ← production dependencies
+└── requirements-dev.txt   ← development dependencies
 ```
 
-## Rodando os testes
+## Running tests
 
 ```bash
-# Instalar dependências de desenvolvimento
 pip install -r requirements-dev.txt
-
-# Executar testes com cobertura
 pytest tests/ --cov --cov-report=term-missing
 ```
 
-## Desinstalar
+## Uninstall
 
 ```bash
 bash uninstall.sh
 ```
 
-## Licença
+## License
 
-Uso pessoal. Projeto de Alexandre Pedroza.
+Personal use. Project by Alexandre Pedroza.
