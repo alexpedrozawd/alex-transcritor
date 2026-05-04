@@ -136,13 +136,9 @@ step "Atualizando pip..."
 ok "pip atualizado"
 
 # ─── 6. Instalar dependências Python ─────────────────────────────────────────
-step "Instalando PyQt6..."
-"$PIP" install "PyQt6>=6.7.0" -q
-ok "PyQt6 instalado"
-
-step "Instalando OpenAI Whisper (pode demorar alguns minutos)..."
-"$PIP" install "openai-whisper>=20240930" -q
-ok "OpenAI Whisper instalado"
+step "Instalando dependências Python (PyQt6 + OpenAI Whisper)..."
+"$PIP" install -r "$SCRIPT_DIR/requirements.txt" -q
+ok "Dependências instaladas"
 
 # ─── 7. PyTorch com CUDA (opcional) ──────────────────────────────────────────
 if command -v nvidia-smi &>/dev/null; then
@@ -179,8 +175,8 @@ fi
 # ─── 10. Garantir ~/.local/bin no PATH ───────────────────────────────────────
 if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
     warn "~/.local/bin não está no PATH — adicionando ao ~/.bashrc e ~/.profile"
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.profile" 2>/dev/null || true
+    grep -qF 'local/bin' "$HOME/.bashrc" || echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
+    grep -qF 'local/bin' "$HOME/.profile" 2>/dev/null || echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.profile" 2>/dev/null || true
     ok "PATH atualizado (reabra o terminal para efetivar)"
 fi
 

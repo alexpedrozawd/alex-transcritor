@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -21,7 +22,9 @@ def load_config() -> dict:
 
 def save_config(data: dict) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+    CONFIG_DIR.chmod(0o700)
+    fd = os.open(CONFIG_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
 
