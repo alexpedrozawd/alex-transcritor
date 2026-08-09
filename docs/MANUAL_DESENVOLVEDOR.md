@@ -1,6 +1,6 @@
 # Manual do Desenvolvedor — Alex Transcritor
 
-Documentação técnica completa do código após a versão 2.1.0.
+Documentação técnica do código na versão 3.0.0.
 
 ---
 
@@ -8,14 +8,15 @@ Documentação técnica completa do código após a versão 2.1.0.
 
 1. [Arquitetura](#arquitetura)
 2. [Módulos e responsabilidades](#módulos-e-responsabilidades)
-3. [Fluxo de dados completo](#fluxo-de-dados-completo)
-4. [Sistema de configuração](#sistema-de-configuração)
-5. [Thread de transcrição](#thread-de-transcrição)
-6. [Interface gráfica](#interface-gráfica)
-7. [Ponto de entrada e instância única](#ponto-de-entrada-e-instância-única)
-8. [Dependências](#dependências)
-9. [Como rodar os testes](#como-rodar-os-testes)
-10. [Como estender o projeto](#como-estender-o-projeto)
+3. [Fluxo completo de uma gravação](#fluxo-completo-de-uma-gravação)
+4. [Qualidade de transcrição: o que foi medido](#qualidade-de-transcrição-o-que-foi-medido)
+5. [Configuração](#configuração)
+6. [Thread de transcrição](#thread-de-transcrição)
+7. [Escolha de dispositivo](#escolha-de-dispositivo)
+8. [Interface gráfica](#interface-gráfica)
+9. [Segurança](#segurança)
+10. [Testes](#testes)
+11. [Como estender](#como-estender)
 
 ---
 
@@ -23,381 +24,238 @@ Documentação técnica completa do código após a versão 2.1.0.
 
 ```
 alex-transcritor/
-├── main.py                        ← thin entry point
+├── main.py                       ← thin entry point (3 linhas)
 ├── alex_transcritor/
-│   ├── __init__.py                ← __version__ = "2.1.0"
-│   ├── constants.py               ← caminhos absolutos derivados de __file__
-│   ├── config.py                  ← persistência JSON + detecção pactl
-│   ├── worker.py                  ← WhisperThread (QThread)
+│   ├── __init__.py               ← __version__
+│   ├── constants.py              ← caminhos, formatos, metadados de modelos
+│   ├── config.py                 ← config validado + descoberta de dispositivos
+│   ├── audio.py                  ← comandos ffmpeg e medição de nível
+│   ├── hardware.py               ← detecção de GPU e escolha cuda/cpu
+│   ├── worker.py                 ← WhisperThread (QThread)
 │   └── ui/
-│       ├── styles.py              ← string CSS (STYLE)
-│       ├── settings_dialog.py     ← QDialog de seleção de dispositivo
+│       ├── styles.py             ← folhas de estilo (STYLE, DIALOG_STYLE)
+│       ├── settings_dialog.py    ← QDialog com abas Áudio/Transcrição/Vocabulário
 │       └── main_window.py        ← QMainWindow principal
-├── tests/                         ← pytest (65 testes, 100% cobertura)
-├── assets/icon.png                ← ícone PNG 256×256
-├── scripts/create_icon.py         ← gerador de ícone (dev)
+├── tests/                        ← pytest (201 testes, 99% de cobertura)
+├── assets/icon.png
+├── scripts/create_icon.py
 ├── requirements.txt
 ├── requirements-dev.txt
-└── pyproject.toml                 ← config pytest/coverage/bandit
+└── pyproject.toml                ← config de pytest, coverage e bandit
 ```
 
-**Princípio de design:** cada módulo tem uma única responsabilidade. O `config.py` não sabe nada de Qt. O `worker.py` não sabe nada de UI. A `MainWindow` orquestra mas não implementa a lógica de áudio diretamente.
+**Princípio de design:** cada módulo tem uma responsabilidade. `config.py`, `audio.py` e `hardware.py` não importam Qt e são testáveis sem display. `worker.py` não sabe nada de UI — comunica-se por sinais. `MainWindow` orquestra, mas não implementa lógica de áudio.
 
 ---
 
 ## Módulos e Responsabilidades
 
-### `alex_transcritor/constants.py`
-
-Define todos os caminhos absolutos do projeto em um único lugar:
+### `constants.py`
 
 ```python
-INSTALL_DIR: Path  # diretório raiz onde main.py está instalado
-WHISPER_BIN: str   # <INSTALL_DIR>/venv/bin/whisper
-ICON_PATH:   str   # <INSTALL_DIR>/assets/icon.png
-SOCKET_NAME: str   # "alex-transcritor-instance" (para instância única)
+INSTALL_DIR: Path              # raiz da instalação
+ICON_PATH: str
+SOCKET_NAME: str               # instância única
+AUDIO_FORMATS: dict            # extensão → argumentos de codec do ffmpeg
+WHISPER_MODELS: tuple          # modelos oferecidos na UI
+MODEL_VRAM_GB: dict            # VRAM exigida por modelo
+whisper_bin() -> str           # venv → irmão do interpretador → PATH
 ```
 
-**Como funciona:** `INSTALL_DIR = Path(__file__).parent.parent` — dois níveis acima de `constants.py` (que está em `alex_transcritor/`), chegando à raiz do projeto. Isso funciona tanto no ambiente de desenvolvimento quanto no instalado em `~/.local/share/alex-transcritor/`.
+`whisper_bin()` resolve em três níveis para que o app funcione tanto instalado (`~/.local/share/alex-transcritor/venv/bin/whisper`) quanto rodando direto do repositório clonado.
+
+### `audio.py`
+
+Constrói comandos do ffmpeg; não executa gravação.
+
+```python
+record_command(output_path, monitor, mic, audio_format) -> list[str]
+gain_command(source, target, gain_db) -> list[str]
+peak_db(path) -> float | None          # via volumedetect
+needed_gain_db(path) -> float          # 0 quando não compensa amplificar
+probe_duration(path) -> float
+unique_path(dir, stem, suffix) -> Path # nunca sobrescreve
+```
+
+Informar `monitor` e `mic` juntos gera um `-filter_complex amix=...`, misturando as duas fontes numa faixa só.
+
+### `hardware.py`
+
+```python
+gpu_vram_gb() -> float                       # via nvidia-smi, sem importar torch
+pick_device(model, preference="auto") -> str # "cuda" ou "cpu"
+```
+
+Consultar `nvidia-smi` em vez de `torch.cuda` evita carregar o PyTorch (segundos e centenas de MB) só para decidir onde rodar.
 
 ---
 
-### `alex_transcritor/config.py`
+## Fluxo completo de uma gravação
 
-Responsável por toda persistência e detecção de dispositivos de áudio.
+```
+Usuário clica ⏺ Gravar
+  → resolve o diretório de saída para caminho absoluto
+  → valida permissão de escrita (os.access W_OK)
+  → get_monitor()/get_mic() validam o dispositivo contra o pactl atual
+  → unique_path() escolhe um nome que não sobrescreve nada
+  → Popen(record_command(...)) com stderr num arquivo temporário
+  → QTimer 1,2 s: confirma que o ffmpeg não morreu
+  → QTimer 1 s: atualiza o contador de tempo
 
-**Variáveis de módulo** (patcháveis em testes):
-```python
-CONFIG_DIR:          Path  # ~/.config/alex-transcritor/
-CONFIG_FILE:         Path  # ~/.config/alex-transcritor/config.json
-DEFAULT_OUTPUT_DIR:  str   # ~/transcricoes
+Usuário clica ⏹ Parar
+  → SIGTERM no ffmpeg, wait(10 s), SIGKILL se preciso
+  → salva o diretório derivado do arquivo gravado
+  → WhisperThread.start()
+       ├─ probe_duration() → define o timeout
+       ├─ needed_gain_db() → amplifica só se o áudio estiver baixo
+       ├─ pick_device() → cuda ou cpu
+       ├─ whisper ... --output_dir <temp>
+       │    lê stderr com select(), emite progress(%)
+       ├─ se falhou em cuda → repete em cpu
+       ├─ confere que o .txt existe de fato
+       ├─ aplica as correções do usuário
+       └─ move para txt_path → succeeded(caminho)
 ```
 
-**Funções:**
-
-#### `load_config() -> dict`
-Lê `config.json`. Retorna `{}` se o arquivo não existir, estiver corrompido ou não for um objeto JSON. A verificação `isinstance(data, dict)` rejeita JSON válido mas não-objeto (ex: arrays).
-
-#### `save_config(data: dict) -> None`
-Escreve `data` em `config.json`, criando `CONFIG_DIR` se necessário. Sobrescreve todo o arquivo — o chamador é responsável por mesclar dados existentes:
-```python
-save_config({**load_config(), "nova_chave": "valor"})
-```
-
-#### `list_monitor_sources() -> list[str]`
-Executa `pactl list sources short` com `timeout=5s` e filtra linhas cujo segundo campo contém `"monitor"`. Retorna `[]` em caso de `FileNotFoundError`, `TimeoutExpired` ou `OSError` (pactl ausente ou sem permissão).
-
-#### `get_monitor() -> str`
-Retorna o monitor configurado em `config.json["monitor"]`. Se não existir, chama `list_monitor_sources()`, usa o primeiro resultado e o persiste. Retorna `""` se nenhum monitor for encontrado.
-
-#### `get_last_output_dir() -> str`
-Retorna `config.json["last_dir"]` ou `DEFAULT_OUTPUT_DIR` se ausente.
-
-#### `save_last_output_dir(path: str) -> None`
-Persiste o diretório de saída usado, preservando outras chaves do config.
+Todo o trabalho intermediário acontece num `TemporaryDirectory`. O Whisper nomeia a saída a partir do arquivo de entrada — como a entrada pode ser uma cópia normalizada, o resultado é renomeado no final para o nome que o usuário escolheu.
 
 ---
 
-### `alex_transcritor/worker.py`
+## Qualidade de transcrição: o que foi medido
 
-#### `class WhisperThread(QThread)`
+Amostra em português do Brasil (86 palavras), comparada a uma transcrição de referência, num Intel i5-10300H com GTX 1650 (3,64 GiB utilizáveis):
 
-Thread que executa a transcrição em background para não bloquear a UI.
-
-**Construtor:**
-```python
-def __init__(self, audio_path: str, output_dir: str, whisper_bin: str)
-```
-Recebe `whisper_bin` como parâmetro (não captura global) — facilita testes e flexibilidade.
-
-**Sinais:**
-- `finished: pyqtSignal()` — emitido quando `returncode == 0`
-- `error: pyqtSignal(str)` — emitido com mensagem descritiva em qualquer falha
-
-**Método `run()`:**
-Executa `whisper <audio> --language Portuguese --model small --output_format txt --output_dir <dir> --fp16 False` via `subprocess.run` com `timeout=3600` (1 hora). Tratamentos específicos:
-
-| Exceção | Mensagem emitida |
+| Configuração | WER |
 |---|---|
-| `FileNotFoundError` | "Binário do Whisper não encontrado: \<path\>" |
-| `TimeoutExpired` | "Tempo limite de transcrição excedido (1 hora)." |
-| `Exception` genérica | "Erro inesperado na transcrição: \<str(exc)\>" |
+| `small`, MP3 24 kb/s, sem vocabulário (versão 2.1.0) | 22,1% |
+| `small`, FLAC, com vocabulário | 19,8% |
+| `turbo`, FLAC, com vocabulário | **5,8%** |
 
-**Por que `--fp16 False`?** Whisper tenta usar FP16 por padrão para GPUs. Em CPUs, isso causa aviso e fallback automático. A flag explícita elimina o ruído no stderr.
+Sobre áudio baixo (pico −24 dBFS):
 
----
+| Configuração | WER |
+|---|---|
+| Sem tratamento | 23,3% |
+| `highpass` + `loudnorm` | 15,1% |
+| **Ganho de pico puro** | **12,8%** |
 
-### `alex_transcritor/ui/styles.py`
+E, sobre áudio já em nível adequado (pico −2 dBFS), aplicar filtro **piorou**: 19,8% → 24,4%. Daí `needed_gain_db()` medir antes e devolver zero quando não há folga real.
 
-Contém apenas a constante `STYLE` (string CSS Qt). Separada para não poluir `main_window.py` com ~50 linhas de CSS. Nenhuma lógica.
+### Restrições descobertas rodando o código
 
----
-
-### `alex_transcritor/ui/settings_dialog.py`
-
-#### `class SettingsDialog(QDialog)`
-
-Diálogo simples para seleção de dispositivo de áudio.
-
-**Comportamento:**
-1. Chama `list_monitor_sources()` para popular o `QComboBox`
-2. Se não houver fontes, exibe `"(nenhuma fonte encontrada)"` e desabilita salvamento
-3. Pré-seleciona o monitor salvo no config, se existir
-4. `_save()` — persiste a seleção via `save_config({**load_config(), "monitor": source})` e fecha o diálogo
-
-**Constante interna:** `_NO_SOURCE_PLACEHOLDER = "(nenhuma fonte encontrada)"` — usada tanto na exibição quanto na validação do `_save()` para evitar salvar o placeholder acidentalmente.
+- **fp16 gera logits NaN** nesta GPU. O Whisper engole a exceção, imprime `Skipping ... due to ValueError` e **sai com código 0** sem gerar arquivo. Por isso `--fp16 False` é fixo e o worker confere a existência do `.txt` em vez de confiar no código de retorno.
+- **A implementação de referência mantém os pesos em float32** mesmo com `--fp16 True`. `turbo` (809 M parâmetros) e `medium` (769 M) estouram os 3,64 GiB da GTX 1650; `small` cabe. É o que `MODEL_VRAM_GB` codifica.
+- **`faster-whisper` seria o próximo salto** (int8/float16 fazem `turbo` caber em 4 GB, 4× mais rápido), mas o `ctranslate2` 4.8.1 não publica wheel para Python 3.14 — inviável enquanto a distribuição só oferecer esse interpretador.
 
 ---
 
-### `alex_transcritor/ui/main_window.py`
+## Configuração
 
-#### Função `_sanitize_filename(name: str) -> str`
+`~/.config/alex-transcritor/config.json`, diretório `0700`, arquivo `0600`.
 
-Remove caracteres problemáticos do nome de arquivo digitado pelo usuário:
-- `/`, `\`, `<`, `>`, `:`, `"`, `|`, `?`, `*`
-- Caracteres de controle (`\x00`–`\x1f`)
-- Remove espaços e pontos das extremidades
-
-Retorna `"gravacao"` se o resultado estiver vazio.
-
-**Segurança:** previne path traversal — sem essa sanitização, `"../etc/passwd"` resultaria em `output_dir + "/../etc/passwd.mp3"`.
-
-#### `class MainWindow(QMainWindow)`
-
-**Construtor:** inicializa atributos de estado (`recording_process`, `whisper_thread`, `audio_path`, `txt_path`, `log_path`) e chama `_build_ui()`.
-
-**Construção da UI:** `_build_ui()` é um orchestrador que chama métodos `_make_*` para cada seção:
-
-| Método | Widget criado | Atributo exposto |
-|---|---|---|
-| `_make_title()` | `QLabel` + `QPushButton` ⚙ | — |
-| `_make_separator()` | `QFrame` | — |
-| `_make_filename_section()` | `QLabel` + `QLineEdit` | `self.input_name` |
-| `_make_directory_section()` | `QLabel` + `QLineEdit` + `QPushButton` | `self.input_dir` |
-| `_make_controls_section()` | 2× `QPushButton` | `self.btn_record`, `self.btn_stop` |
-| `_make_status_label()` | `QLabel` | `self.lbl_status` |
-| `_make_file_buttons()` | `QWidget` com 3× `QPushButton` | `self.widget_files`, `self.btn_open_audio`, `self.btn_open_text`, `self.btn_open_log` |
-| `_make_version_label()` | `QLabel` (rodapé, direita) | — |
-
-**`closeEvent`:** encerra o app normalmente (`event.accept()`). Se houver gravação em andamento, exibe confirmação antes de encerrar.
-
-**`_start_recording()`:**
-```
-1. Sanitiza nome via _sanitize_filename()
-2. Valida se output_dir não está vazio
-3. os.makedirs(output_dir) — captura PermissionError e OSError
-4. get_monitor() — se vazio, exibe warning e retorna
-5. subprocess.Popen(["ffmpeg", "-y", "-f", "pulse", "-i", monitor, ...])
-   — captura FileNotFoundError se ffmpeg não instalado
-6. Atualiza estado dos botões e lbl_status
-```
-
-**`_stop_recording()`:**
-```
-1. Termina o processo ffmpeg (terminate + wait)
-2. Salva o último diretório usado via save_last_output_dir()
-3. Cria WhisperThread com whisper_bin=WHISPER_BIN
-4. Conecta finished → _on_done, error → _on_error
-5. Inicia a thread
-```
-
----
-
-### `alex_transcritor/app.py`
-
-#### `_check_dependencies() -> list[str]`
-
-Usa `shutil.which()` para verificar `ffmpeg` e `pactl` no PATH. Verifica `Path(WHISPER_BIN).exists()` para o executável Whisper. Retorna lista de dependências ausentes.
-
-#### `_is_already_running() -> bool`
-
-Tenta conectar ao servidor `QLocalServer` pelo `SOCKET_NAME`. Se conectar com sucesso, envia `b"show"` para que a instância existente mostre a janela, fecha o socket e retorna `True`.
-
-#### `_on_new_connection(server, window)`
-
-Handler do sinal `server.newConnection`. Lê a mensagem da conexão e chama `window._show_window()`.
-
-#### `main()`
-
-Ponto de entrada principal:
-1. Cria `QApplication`
-2. Verifica instância única via `_is_already_running()`
-3. Chama `_check_dependencies()` — exibe `QMessageBox.Warning` se alguma ausente
-4. Cria `QLocalServer` para detectar futuras instâncias
-5. Cria e exibe `MainWindow`
-6. Conecta `server.newConnection`
-7. Inicia o event loop (`app.exec()`)
-
----
-
-## Fluxo de Dados Completo
-
-```
-Usuário clica "Gravar"
-    │
-    ▼
-MainWindow._start_recording()
-    ├── _sanitize_filename(input_name) → "nome-do-arquivo"
-    ├── os.makedirs(output_dir)
-    ├── get_monitor() → "alsa_output.usb-headset.monitor"
-    │       └── load_config()["monitor"] ou list_monitor_sources()[0]
-    └── subprocess.Popen(["ffmpeg", "-f", "pulse", "-i", monitor, ..., audio_path])
-            → grava audio_path.mp3 em tempo real
-
-Usuário clica "Parar"
-    │
-    ▼
-MainWindow._stop_recording()
-    ├── recording_process.terminate() + wait()
-    ├── save_last_output_dir(output_dir) → config.json["last_dir"]
-    └── WhisperThread(audio_path, output_dir, WHISPER_BIN).start()
-
-[thread separada]
-WhisperThread.run()
-    └── subprocess.run(["whisper", audio_path, "--language", "Portuguese", ...])
-            ├── returncode == 0 → emit finished()
-            └── returncode != 0 / exceção → emit error(msg)
-
-MainWindow._on_done()                   MainWindow._on_error(msg)
-    ├── UI: "✅ Transcrição concluída"       ├── UI: "❌ Erro na transcrição"
-    └── mostra btn_open_audio/text          ├── open(log_path).write(msg)
-                                            └── mostra btn_open_log
-```
-
----
-
-## Sistema de Configuração
-
-**Arquivo:** `~/.config/alex-transcritor/config.json`
-
-**Estrutura:**
-```json
-{
-  "monitor": "alsa_output.usb-headset-00.analog-stereo.monitor",
-  "last_dir": "/home/usuario/transcricoes/aulas"
+```python
+DEFAULTS = {
+    "monitor": "", "mic": "", "source_mode": "system",
+    "last_dir": "", "model": "turbo", "language": "pt",
+    "audio_format": "flac", "enhance_audio": True,
+    "vocabulary": "", "replacements": "", "device": "auto",
 }
 ```
 
-| Chave | Tipo | Descrição | Quem escreve | Quem lê |
-|---|---|---|---|---|
-| `monitor` | string | Nome do source PulseAudio/PipeWire | `get_monitor()`, `SettingsDialog._save()` | `get_monitor()` |
-| `last_dir` | string | Último diretório de saída usado | `save_last_output_dir()` | `get_last_output_dir()` |
+`load_config()` nunca confia no disco: chaves desconhecidas são descartadas, valores com tipo divergente voltam ao padrão e campos enumerados (`model`, `device`, `audio_format`, `source_mode`) são validados contra o domínio permitido. Um `config.json` corrompido ou adulterado degrada para os padrões em vez de propagar valor arbitrário para a linha de comando.
 
-**Estratégia de merge:** `save_config({**load_config(), "chave": "valor"})` — lê o config atual, mescla a nova chave e sobrescreve. Evita perder chaves não relacionadas.
+`save_config()` grava em arquivo temporário no mesmo diretório e faz `os.replace()`. Uma falha no meio da escrita preserva o config anterior — antes, o `O_TRUNC` zerava o arquivo antes de escrever.
 
----
-
-## Thread de Transcrição
-
-`WhisperThread` herda de `QThread`. O método `run()` é executado em um thread C++ gerenciado pelo Qt.
-
-**Atenção para testes:** `coverage.py` não rastreia código executado em C++ threads (QThread). Para 100% de cobertura, os testes chamam `thread.run()` diretamente (síncrono). O comportamento assíncrono real é verificado pelo teste `test_thread_via_start_emits_signal`.
+`get_monitor()`/`get_mic()` validam o dispositivo salvo contra a lista atual do `pactl`. Um dispositivo que sumiu é substituído pelo primeiro disponível: sem isso o ffmpeg cai silenciosamente na fonte padrão e grava a coisa errada.
 
 ---
 
-## Interface Gráfica
+## Thread de transcrição
 
-**Framework:** PyQt6 6.x (Qt 6.x)
-
-**Tamanho fixo:** 360×365px. `setFixedSize` impede redimensionamento, adequado para um app utilitário com layout determinístico.
-
-**Tema:** dark manual via CSS string em `styles.py`. Não usa `QDarkStyle` ou similar para evitar dependência extra.
-
-**Sem tray icon:** o app não usa `QSystemTrayIcon`. Fechar a janela encerra o app (`setQuitOnLastWindowClosed(True)` em `app.py`). O botão ⚙ Configurações fica permanentemente visível no canto superior direito da janela.
-
----
-
-## Ponto de Entrada e Instância Única
-
-O mecanismo de instância única usa `QLocalServer`/`QLocalSocket` (sockets de domínio Unix em `~/.local/share/alex-transcritor-instance`):
-
-1. Instância nova tenta conectar ao socket
-2. Se conectar → envia `b"show"` e encerra
-3. Se não conectar → cria o servidor e continua a execução
-4. Instância existente detecta a conexão via `newConnection`, lê a mensagem e chama `_show_window()`
-
-`QLocalServer.removeServer(SOCKET_NAME)` é chamado antes de `listen()` para limpar sockets órfãos de crashes anteriores.
-
----
-
-## Dependências
-
-### Produção (`requirements.txt`)
-
-| Pacote | Versão mínima | Propósito |
-|---|---|---|
-| `PyQt6` | 6.7.0 | Framework GUI |
-| `openai-whisper` | 20240930 | Motor de transcrição |
-
-`openai-whisper` instala automaticamente: `torch`, `numpy`, `tiktoken`, `tqdm`, `regex`, `ffmpeg-python`.
-
-**Nota sobre torch:** instalado automaticamente pelo Whisper. Para GPU, o `install.sh` instala versão CUDA específica. Sem GPU, usa CPU (mais lento mas funcional).
-
-### Desenvolvimento (`requirements-dev.txt`)
-
-| Pacote | Propósito |
-|---|---|
-| `pytest` | Runner de testes |
-| `pytest-qt` | Fixtures para testar widgets PyQt6 (`qtbot`) |
-| `pytest-mock` | `mocker` fixture para mocking |
-| `pytest-cov` | Relatório de cobertura |
-| `bandit` | Análise estática de segurança |
-| `pip-audit` | Varredura de CVEs em dependências |
-
-### Sistema (binários)
-
-| Binário | Propósito | Instalação |
-|---|---|---|
-| `ffmpeg` | Captura de áudio via PulseAudio | `sudo apt install ffmpeg` |
-| `pactl` | Listar dispositivos de áudio | Parte do `pulseaudio-utils` ou `pipewire-pulse` |
-| `xdg-open` | Abrir arquivos com app padrão | Geralmente pré-instalado |
-
----
-
-## Como Rodar os Testes
-
-```bash
-# Ativar o venv (ou usar o venv instalado)
-source venv/bin/activate   # ou: source ~/.local/share/alex-transcritor/venv/bin/activate
-
-# Instalar deps de desenvolvimento
-pip install -r requirements-dev.txt
-
-# Rodar todos os testes
-pytest tests/
-
-# Com cobertura
-pytest tests/ --cov --cov-report=term-missing
-
-# Arquivo específico
-pytest tests/test_config.py -v
-
-# Análise de segurança
-bandit -r alex_transcritor/ -c pyproject.toml
-
-# Verificação de CVEs
-pip-audit
+```python
+class WhisperThread(QThread):
+    succeeded = pyqtSignal(str)      # caminho do .txt
+    failed = pyqtSignal(str)
+    progress = pyqtSignal(int, str)  # percentual, rótulo
 ```
 
-**Ambiente headless:** `tests/conftest.py` define `QT_QPA_PLATFORM=offscreen` antes de qualquer import PyQt6, permitindo rodar testes sem servidor X/Wayland.
+Os sinais **não** se chamam `finished`/`error`: `finished` sombrearia o sinal homônimo que o `QThread` emite por conta própria.
+
+**Progresso.** O Whisper escreve a barra do tqdm em stderr, sobrescrevendo a linha com `\r`. O worker lê o stream com `select()` (timeout de 0,5 s), extrai o último `NN%|` e distingue download de modelo (`iB/s`) de transcrição (`frames/s`). O `select()` também garante que o cancelamento e o timeout sejam avaliados mesmo quando o processo fica mudo.
+
+**Cancelamento.** `cancel()` define `_cancelled` e mata o processo filho (`terminate`, `wait(5 s)`, `kill`). `QThread.terminate()` sozinho matava apenas a thread Python e deixava o Whisper rodando órfão, segurando GPU e vários GB de RAM.
+
+**Timeout.** `max(900 s, duração × 25)`. O teto fixo de uma hora interrompia gravações longas: em CPU o `turbo` roda perto de 1,2× tempo real.
+
+**Fallback.** Falha com `device == "cuda"` dispara uma segunda tentativa em CPU. Cobre tanto OOM de VRAM quanto NaN em fp16.
 
 ---
 
-## Como Estender o Projeto
+## Escolha de dispositivo
 
-### Adicionar novo campo ao config
-1. Adicionar função `get_X()` e `save_X()` em `config.py`
-2. Escrever testes em `test_config.py` com fixture `isolated_config`
-3. Usar em `MainWindow` ou onde aplicável
+| `device` no config | Comportamento |
+|---|---|
+| `auto` (padrão) | `cuda` se a VRAM comportar `MODEL_VRAM_GB[modelo] × 1,15`; senão `cpu` |
+| `cuda` | força GPU (com fallback automático para CPU em caso de falha) |
+| `cpu` | força CPU |
 
-### Adicionar novo modelo Whisper
-1. Adicionar `QComboBox` em `SettingsDialog` com os modelos disponíveis (`tiny`, `base`, `small`, `medium`, `large`)
-2. Persistir em `config.json["model"]`
-3. Passar como parâmetro ao `WhisperThread` (adicionar `model` ao construtor)
-4. Modificar o `subprocess.run` em `worker.py` para usar o modelo
+---
 
-### Adicionar seleção de idioma
-Mesmo padrão do modelo: `QComboBox` em `SettingsDialog` → `config.json["language"]` → parâmetro em `WhisperThread`.
+## Interface gráfica
 
-### Adicionar indicador de progresso
-`WhisperThread` poderia emitir um sinal `progress(int)` se a saída do Whisper for lida linha a linha (`subprocess.Popen` com pipe + leitura incremental). A `MainWindow` conectaria esse sinal a um `QProgressBar`.
+`MainWindow` é montada por métodos `_make_*`, cada um devolvendo um widget ou layout. A janela tem tamanho mínimo em vez de fixo — com fontes de acessibilidade o layout fixo cortava texto.
+
+O botão ⏹ acumula dois papéis: **Parar** durante a gravação e **✕ Cancelar** durante a transcrição (`_stop_clicked` despacha conforme o estado).
+
+`SettingsDialog` tem três abas e grava tudo de uma vez em `_save()`. Cada `QComboBox` guarda o valor de config em `userData`, separando rótulo exibido de valor persistido.
+
+---
+
+## Segurança
+
+| Vetor | Tratamento |
+|---|---|
+| Injeção de comando | Todo `subprocess` recebe lista de argumentos, nunca `shell=True`. Nome de dispositivo hostil vira argumento isolado |
+| Travessia de caminho | `_sanitize_filename()` remove separadores, caracteres de controle e limita a 200 caracteres; o diretório é resolvido para absoluto |
+| Config adulterado | Validação de tipo e de domínio em `load_config()` |
+| Corrupção do config | Escrita atômica com `os.replace()` |
+| Permissões | `config.json` e o log de erro em `0600`; diretório de config em `0700` |
+| Socket de instância única | `QLocalServer.SocketOption.UserAccessOption` — sem isso qualquer conta local conecta |
+| Prompt de vocabulário | Limitado a 700 caracteres (o Whisper aceita ~224 tokens) |
+| Correções do usuário | `re.escape()` no padrão e substituição por callable — nada é interpretado como regex |
+
+Verificação: `bandit` sem apontamentos; `pip-audit` sem vulnerabilidades conhecidas.
+
+---
+
+## Testes
+
+```bash
+pytest tests/ --cov --cov-report=term-missing
+```
+
+| Arquivo | Foco |
+|---|---|
+| `test_config.py` | validação, atomicidade, permissões, vocabulário |
+| `test_audio.py` | montagem de comandos, medição de nível, nomes únicos |
+| `test_hardware.py` | detecção de GPU e escolha de dispositivo |
+| `test_worker.py` | pipeline completo com um Whisper falso |
+| `test_main_window.py` | estados da UI, validações, encerramento |
+| `test_settings_dialog.py` | carga e persistência das três abas |
+| `test_app.py` | dependências, instância única, `main()` |
+
+`test_worker.py` não mocka `subprocess`: roda um script Python que imita o binário real — barra de progresso em stderr, saída nomeada pelo arquivo de entrada e o código de retorno 0 mesmo sem transcrever. Foi assim que o modo de falha silenciosa ficou coberto.
+
+`conftest.py` define `QT_QPA_PLATFORM=offscreen` antes de qualquer import do PyQt6, o que permite testar até o `main()`.
+
+---
+
+## Como estender
+
+**Novo formato de áudio:** adicione a entrada em `AUDIO_FORMATS` (`constants.py`) e o rótulo em `FORMAT_LABELS` (`settings_dialog.py`).
+
+**Novo modelo:** acrescente a `WHISPER_MODELS`, a `MODEL_VRAM_GB` e a `MODEL_LABELS`.
+
+**Outro formato de saída (SRT/VTT):** `_run_whisper()` passa `--output_format txt`; aceitar uma lista exige ajustar também o `glob("*.txt")` e o `_publish()`.
+
+**Trocar a engine (faster-whisper):** o ponto de extensão é `WhisperThread._run_whisper()`. A interface de sinais e o restante do fluxo permanecem válidos.

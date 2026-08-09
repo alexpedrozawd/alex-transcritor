@@ -1,313 +1,157 @@
 # Manual do Usuário — Alex Transcritor
 
-Guia completo para instalar, configurar e usar o Alex Transcritor.
+Guia para instalar, configurar e usar o Alex Transcritor.
 
 ---
 
 ## O que é
 
-O Alex Transcritor é um aplicativo desktop para Linux que **grava o áudio do seu computador e transcreve automaticamente para texto** usando inteligência artificial (OpenAI Whisper).
+Um aplicativo desktop para Linux que **grava o áudio do seu computador e transcreve automaticamente para texto**, usando o OpenAI Whisper. Tudo roda na sua máquina: nenhum áudio sai do computador, não há chave de API nem mensalidade.
 
-Ideal para gravar aulas, reuniões, podcasts ou qualquer áudio que você queira transformar em texto.
+Serve para aulas, reuniões, entrevistas, podcasts — qualquer áudio que você queira em texto.
 
 ---
 
 ## Pré-requisitos
 
-Antes de instalar, verifique se seu sistema tem:
+- **Linux** (Ubuntu, Debian, Mint, Fedora, Arch…)
+- **Python 3.10 ou superior** — confira com `python3 --version`
+- **ffmpeg** e **ffprobe** (o instalador tenta instalar)
+- **PulseAudio ou PipeWire** (com o comando `pactl`)
+- **~4 GB de espaço livre** (ambiente Python + modelo de IA)
+- Conexão com a internet apenas na instalação
 
-- **Linux** (Ubuntu, Debian, Linux Mint, Fedora, Arch, etc.)
-- **Python 3.10 ou superior**
-- **Conexão com a internet** (para baixar as dependências e o modelo de IA na primeira vez)
-- **~500 MB de espaço livre em disco**
-
-Para verificar sua versão do Python:
-```
-python3 --version
-```
+Placa de vídeo NVIDIA é opcional. Sem GPU — ou quando o modelo escolhido não cabe na memória da placa — a transcrição roda na CPU: mais lenta, com a mesma precisão.
 
 ---
 
-## Instalação passo a passo
+## Instalação
 
-### Passo 1 — Obter os arquivos do projeto
+Dentro da pasta do projeto:
 
-Copie a pasta `alex-transcritor` para o seu computador (via pendrive, download, etc.) e abra um terminal nela.
-
-### Passo 2 — Executar o instalador
-
-No terminal, dentro da pasta do projeto:
-
-```
+```bash
 bash install.sh
 ```
 
-O instalador irá:
+O instalador cuida de tudo: dependências do sistema, ambiente Python isolado, download do modelo, ícone no menu de aplicativos e uma verificação final para garantir que o app realmente sobe.
 
-```
-╔══════════════════════════════════════════╗
-║      Alex Transcritor — Instalador       ║
-╚══════════════════════════════════════════╝
+Quando ele perguntar se deve baixar o modelo `turbo` (~1,5 GB), responda **s**. Se você deixar para depois, o download acontece sozinho na primeira transcrição — mas aí a primeira gravação demora bem mais.
 
-[*] Verificando dependências do sistema...
-[✓] Python 3.12
-[✓] ffmpeg 6.1.1
-[✓] PulseAudio/PipeWire (pactl disponível)
-
-[*] Criando diretórios de instalação...
-[*] Copiando arquivos do app...
-[*] Criando venv...
-[*] Instalando PyQt6...
-[*] Instalando OpenAI Whisper (pode demorar alguns minutos)...
-```
-
-> **Atenção:** A instalação do Whisper pode levar de 5 a 15 minutos dependendo da sua conexão. Aguarde até o final.
-
-### Passo 3 — Baixar o modelo de IA
-
-O instalador verifica automaticamente se o modelo já está baixado:
-
-- **Modelo já existe** → exibe `[✓] Modelo Whisper 'small' já está baixado` e segue em frente
-- **Modelo ausente** → pergunta se quer baixar agora:
-
-```
-[?] Baixar o modelo Whisper 'small' agora? (~244 MB) [s/N]:
-```
-
-Digite **s** para baixar agora (recomendado na primeira instalação). Se escolher não, o modelo será baixado automaticamente na primeira transcrição.
-
-### Passo 4 — Concluído!
+Ao final:
 
 ```
 ╔══════════════════════════════════════════╗
 ║    Instalação concluída com sucesso! ✓   ║
 ╚══════════════════════════════════════════╝
-
-  Como iniciar:
-    • Menu de aplicativos: Alex Transcritor
-    • Terminal: alex-transcritor
 ```
-
-O aplicativo já aparece no **menu de aplicativos** do seu sistema, na categoria **Áudio e Vídeo**.
 
 ---
 
-## Primeira configuração — Dispositivo de áudio
+## Primeiro uso
 
-Na **primeira vez** que usar o app, você precisa configurar qual dispositivo de áudio será gravado.
+Abra o app pelo menu de aplicativos (**Alex Transcritor**) ou digitando `alex-transcritor` no terminal.
 
-### Como configurar
+**Antes da primeira gravação, clique no botão ⚙ no canto superior direito.** Vale conferir três coisas:
 
-1. Abra o Alex Transcritor
-2. Na janela principal, clique no botão **⚙** no canto superior direito
-3. Na janela de Configurações, selecione o dispositivo de áudio no menu suspenso:
+### Aba Áudio
 
-```
-┌─────────────────────────────────────────────┐
-│  DISPOSITIVO DE ÁUDIO (MONITOR)             │
-│  ┌─────────────────────────────────────┐    │
-│  │ alsa_output.usb-headset.monitor   ▼ │    │
-│  └─────────────────────────────────────┘    │
-│                              [ Salvar ]     │
-└─────────────────────────────────────────────┘
-```
-
-4. Clique em **Salvar**
-
-> **Dica:** Escolha o dispositivo que corresponde ao seu headset, fone ou saída de áudio. Itens com `.monitor` no nome capturam o áudio que está sendo reproduzido pelo dispositivo.
-
----
-
-## Como gravar e transcrever
-
-### Interface principal
-
-```
-┌──────────────────────────────────────┐
-│   ALEX-TRANSCRITOR              [⚙]  │
-│──────────────────────────────────────│
-│  NOME DO ARQUIVO                     │
-│  ┌──────────────────────────────┐    │
-│  │ ex: aula-01                  │    │
-│  └──────────────────────────────┘    │
-│                                      │
-│  DIRETÓRIO DE SAÍDA                  │
-│  ┌─────────────────────────┐ […]    │
-│  │ /home/user/transcricoes │        │
-│  └─────────────────────────┘        │
-│                                      │
-│  [ ⏺ Gravar ]   [ ⏹ Parar ]        │
-│                                      │
-│        Aguardando...                 │
-│                               v2.1.0 │
-└──────────────────────────────────────┘
-```
-
-### Passo a passo
-
-**1. Defina o nome do arquivo**
-Digite um nome para identificar a gravação (ex: `reuniao-segunda`, `aula-01`). Caracteres especiais como `/` são removidos automaticamente.
-
-**2. Escolha o diretório de saída**
-Por padrão é `~/transcricoes`. Clique no botão **…** para escolher outra pasta. O app lembra o último diretório usado.
-
-**3. Clique em ⏺ Gravar**
-O indicador muda para:
-```
-🔴  Gravando...
-```
-O áudio está sendo capturado.
-
-**4. Clique em ⏹ Parar**
-O indicador muda para:
-```
-⏳  Transcrevendo...
-```
-O Whisper está processando o áudio. Aguarde — pode levar alguns segundos ou minutos dependendo do tamanho da gravação.
-
-**5. Transcrição concluída!**
-```
-✅  Transcrição concluída!
-```
-Três botões aparecem:
-
-| Botão | O que abre |
+| Campo | O que fazer |
 |---|---|
-| 🎵 Áudio | O arquivo MP3 gravado |
-| 📄 Texto | O arquivo TXT com a transcrição |
-| 📋 Ver Log de Erro | Só aparece se houver erro |
+| **O que gravar** | `Áudio do sistema` para gravar o que sai pelas caixas/fone. `Microfone` para gravar sua voz. `Sistema + microfone` para reuniões, em que você quer os dois lados. |
+| **Dispositivo de saída** | Escolha o `.monitor` correspondente ao aparelho que você usa. Se estiver errado, a gravação sai muda. |
+| **Microfone** | Só é usado nos modos `Microfone` e `Sistema + microfone`. |
+| **Formato do arquivo** | Deixe em **FLAC**. É sem perda de qualidade e ocupa metade de um WAV. MP3 existe por compatibilidade, mas piora a transcrição. |
+| **Corrigir volume baixo** | Deixe marcado. O app mede o nível do áudio e só amplifica quando está mesmo baixo — e sempre numa cópia, sem alterar a gravação salva. |
+
+### Aba Transcrição
+
+| Campo | O que fazer |
+|---|---|
+| **Modelo** | `turbo` é o padrão e o mais preciso na prática. `small` é bem mais rápido e menos preciso — troque se a espera incomodar mais que os erros. |
+| **Idioma** | `Português`, ou `Detectar automaticamente` se você grava em vários idiomas. |
+| **Processamento** | Deixe em `Automático`: o app usa a GPU quando o modelo cabe nela e cai para a CPU quando não cabe. |
+
+### Aba Vocabulário — a que mais reduz erro
+
+**Termos que costumam aparecer:** liste nomes próprios e jargões separados por vírgula.
+
+```
+Alexandre Pedroza, PipeWire, Kubernetes, Dra. Marcela, ANVISA, faturamento recorrente
+```
+
+Esses termos são enviados ao modelo como contexto antes da transcrição, o que aumenta muito a chance de ele escrever "PipeWire" em vez de "pipe lady". Cadastre os nomes das pessoas com quem você mais conversa e os termos da sua área.
+
+**Correções automáticas:** para o erro que insiste em aparecer, escreva uma linha por correção:
+
+```
+pipe lady => PipeWire
+pedrona => Pedroza
+```
+
+São aplicadas ao texto final, sem diferenciar maiúsculas de minúsculas.
+
+---
+
+## Gravando
+
+1. Digite um **nome de arquivo** (se deixar em branco, o app usa data e hora)
+2. Confira o **diretório de saída** — o app lembra o último usado
+3. Clique em **⏺ Gravar**. O contador mostra o tempo decorrido
+4. Clique em **⏹ Parar** quando terminar
+5. Acompanhe a barra de progresso da transcrição. Durante essa etapa o mesmo botão vira **✕ Cancelar**
+6. Quando terminar, aparecem os botões **🎵 Áudio** e **📄 Texto**
+
+O app **nunca sobrescreve** um arquivo existente: gravar "aula" duas vezes gera `aula.flac` e `aula-2.flac`.
+
+### Quanto tempo demora
+
+Depende do modelo e de onde ele roda. Medido num Intel i5-10300H com GTX 1650:
+
+| Modelo | Onde roda | Tempo para 1 h de áudio |
+|---|---|---|
+| `small` | GPU de 4 GB | ~20 min |
+| `turbo` | CPU (8 threads) | ~1 h 15 min |
+
+Você pode continuar usando o computador enquanto a transcrição roda.
+
+---
+
+## Quando algo dá errado
+
+| Sintoma | Causa provável | O que fazer |
+|---|---|---|
+| **"Falha na gravação"** logo ao clicar em Gravar | Dispositivo de áudio inválido | Abra ⚙ → Áudio e escolha outro dispositivo. A mensagem traz o erro do ffmpeg |
+| **"A gravação ficou vazia"** | Foi capturada a fonte errada, ou nada tocou | Confira o dispositivo em ⚙ → Áudio |
+| **Botão 📋 Ver Log de Erro** aparece | A transcrição falhou | Abra o log: ele traz a mensagem exata do Whisper |
+| **Transcrição muito lenta** | Modelo grande rodando em CPU | ⚙ → Transcrição → mude para `small` |
+| **Palavras erradas** | Vocabulário não cadastrado | ⚙ → Vocabulário: cadastre os termos e as correções automáticas |
+| **App não abre** | Instalação incompleta | Rode `alex-transcritor` no terminal para ver a mensagem de erro |
+
+O áudio continua salvo mesmo quando a transcrição falha — o botão **🎵 Áudio** permanece disponível.
 
 ---
 
 ## Onde ficam os arquivos
 
-Por padrão, os arquivos são salvos em `~/transcricoes/`:
-
-```
-~/transcricoes/
-├── aula-01.mp3          ← gravação de áudio
-├── aula-01.txt          ← transcrição em texto
-└── aula-01_erro.txt     ← log de erro (só se houver problema)
-```
-
-Você pode mudar o diretório a qualquer momento pelo campo **Diretório de Saída**.
+| O quê | Onde |
+|---|---|
+| Aplicativo e ambiente Python | `~/.local/share/alex-transcritor/` |
+| Configurações | `~/.config/alex-transcritor/config.json` (só o seu usuário lê) |
+| Modelos de IA | `~/.cache/whisper/` |
+| Gravações e transcrições | onde você escolher (padrão `~/transcricoes`) |
 
 ---
 
-## Fechar o aplicativo
-
-Quando você fecha a janela principal, o app **encerra completamente**.
-
-Para abrir novamente, use o menu de aplicativos ou o terminal:
-```
-alex-transcritor
-```
-
----
-
-## Solução de problemas
-
-### "Nenhum dispositivo de áudio configurado"
-
-O app não encontrou um monitor de áudio configurado.
-
-**Solução:**
-1. Certifique-se de que seu headset/fone está conectado
-2. Clique em **⚙ Configurações** (canto superior direito) → selecione o dispositivo → Salvar
-3. Se a lista estiver vazia, verifique se o PulseAudio ou PipeWire está em execução:
-   ```
-   pactl list sources short
-   ```
-
----
-
-### "ffmpeg não encontrado"
-
-O FFmpeg não está instalado no sistema.
-
-**Solução:**
-```bash
-# Ubuntu/Debian
-sudo apt install ffmpeg
-
-# Fedora
-sudo dnf install ffmpeg
-
-# Arch Linux
-sudo pacman -S ffmpeg
-```
-
----
-
-### Transcrição lenta
-
-O Whisper está rodando em **CPU** (sem GPU). Isso é normal — um áudio de 10 minutos pode levar 2-5 minutos para transcrever.
-
-Para acelerar, se você tem uma GPU NVIDIA, reinstale o PyTorch com suporte CUDA:
-```bash
-~/.local/share/alex-transcritor/venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cu121
-```
-
----
-
-### Erro na transcrição — botão "Ver Log de Erro"
-
-Clique em **📋 Ver Log de Erro** para ver a mensagem completa. Causas comuns:
-
-| Mensagem no log | Causa | Solução |
-|---|---|---|
-| "Binário do Whisper não encontrado" | Whisper não instalado no venv | Execute `bash install.sh` novamente |
-| "returncode 1" + texto de erro | Arquivo de áudio corrompido ou muito curto | Grave por pelo menos 2 segundos |
-| "Tempo limite excedido" | Gravação muito longa (>1 hora) | Divida em partes menores |
-
----
-
-### O app não abre / já está aberto
-
-O app detecta se já está rodando. Se tentar abrir uma segunda instância, a janela existente será trazida para o primeiro plano automaticamente.
-
-Se o app travou e não abre mais:
-```bash
-# Limpar socket órfão
-rm -f /tmp/alex-transcritor-instance
-alex-transcritor
-```
-
----
-
-### Dependências ausentes ao abrir
-
-Se um aviso aparecer ao iniciar listando dependências ausentes, instale o que estiver faltando:
+## Desinstalação
 
 ```bash
-# ffmpeg
-sudo apt install ffmpeg
-
-# pactl (PulseAudio)
-sudo apt install pulseaudio-utils
-
-# ou PipeWire
-sudo apt install pipewire-pulse
-```
-
----
-
-## Desinstalar
-
-Para remover completamente o app do seu computador:
-
-```bash
-cd alex-transcritor
 bash uninstall.sh
 ```
 
-O desinstalador removerá:
-- Os arquivos do app (`~/.local/share/alex-transcritor/`)
-- O launcher (`~/.local/bin/alex-transcritor`)
-- A entrada no menu de aplicativos
-- As configurações (`~/.config/alex-transcritor/`)
+Remove o aplicativo, o launcher, o ícone do menu e as configurações. Os modelos em `~/.cache/whisper` e as suas gravações **não** são apagados.
 
-**Não serão removidos:** os modelos do Whisper em `~/.cache/whisper/` (~244 MB). Para remover também:
-```bash
-rm -rf ~/.cache/whisper
-```
+---
+
+## Privacidade
+
+O áudio nunca sai da sua máquina. O modelo é baixado uma vez e toda a transcrição acontece localmente. O arquivo de configuração e o log de erro são gravados com permissão restrita ao seu usuário.

@@ -1,26 +1,44 @@
 import os
 import re
 import subprocess
+import tempfile
+import time
+from datetime import datetime
+from pathlib import Path
+
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout,
     QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QFileDialog, QFrame, QMessageBox,
+    QFileDialog, QFrame, QMessageBox, QProgressBar,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon, QCloseEvent
 
 from .. import __version__
+from ..audio import record_command, unique_path
 from ..constants import ICON_PATH, WHISPER_BIN
-from ..config import get_monitor, get_last_output_dir, save_last_output_dir
+from ..config import (
+    load_config, get_monitor, get_mic, get_last_output_dir,
+    save_last_output_dir, get_initial_prompt, get_replacements,
+)
 from ..worker import WhisperThread
 from .styles import STYLE
 from .settings_dialog import SettingsDialog
+
+#: Deixa margem para o sufixo "-2" e para a extensão dentro do limite de 255
+#: bytes por componente de caminho da maioria dos sistemas de arquivos Linux.
+MAX_NAME_LEN = 200
+
+#: Tempo dado ao ffmpeg para falhar de forma visível (dispositivo inexistente,
+#: destino sem permissão) antes de a interface confirmar que está gravando.
+FFMPEG_CHECK_MS = 1200
 
 
 def _sanitize_filename(name: str) -> str:
     name = re.sub(r'[/\\<>:"|?*\x00-\x1f]', "_", name)
     name = name.strip(". ")
-    return name or "gravacao"
+    name = name[:MAX_NAME_LEN].strip(". ")
+    return name or datetime.now().strftime("gravacao-%Y-%m-%d-%H%M%S")
 
 
 class MainWindow(QMainWindow):
@@ -31,13 +49,19 @@ class MainWindow(QMainWindow):
         self.audio_path = ""
         self.txt_path = ""
         self.log_path = ""
+        self._ffmpeg_log: str = ""
+        self._started_at = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._tick)
         self._build_ui()
 
     # ── UI construction ───────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
         self.setWindowTitle("Alex-Transcritor")
-        self.setFixedSize(360, 385)
+        self.setMinimumSize(380, 430)
+        self.resize(380, 430)
         self.setWindowIcon(QIcon(ICON_PATH))
         self.setStyleSheet(STYLE)
 
@@ -58,9 +82,11 @@ class MainWindow(QMainWindow):
         root.addLayout(self._make_controls_section())
         root.addSpacing(14)
         root.addWidget(self._make_status_label())
+        root.addSpacing(6)
+        root.addWidget(self._make_progress_bar())
         root.addSpacing(10)
         root.addWidget(self._make_file_buttons())
-        root.addSpacing(8)
+        root.addStretch(1)
         root.addWidget(self._make_version_label())
 
     def _make_title(self) -> QWidget:
@@ -100,7 +126,8 @@ class MainWindow(QMainWindow):
         lbl = QLabel("NOME DO ARQUIVO")
         lbl.setObjectName("label_field")
         self.input_name = QLineEdit()
-        self.input_name.setPlaceholderText("ex: aula-01")
+        self.input_name.setPlaceholderText("ex: aula-01 (vazio = data e hora)")
+        self.input_name.setMaxLength(MAX_NAME_LEN)
         layout.addWidget(lbl)
         layout.addWidget(self.input_name)
         return layout
@@ -133,7 +160,7 @@ class MainWindow(QMainWindow):
         self.btn_stop = QPushButton("⏹  Parar")
         self.btn_stop.setObjectName("btn_stop")
         self.btn_stop.setEnabled(False)
-        self.btn_stop.clicked.connect(self._stop_recording)
+        self.btn_stop.clicked.connect(self._stop_clicked)
         row.addWidget(self.btn_record)
         row.addWidget(self.btn_stop)
         return row
@@ -142,7 +169,16 @@ class MainWindow(QMainWindow):
         self.lbl_status = QLabel("Aguardando...")
         self.lbl_status.setObjectName("label_status")
         self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_status.setWordWrap(True)
         return self.lbl_status
+
+    def _make_progress_bar(self) -> QProgressBar:
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(6)
+        self.progress.hide()
+        return self.progress
 
     def _make_file_buttons(self) -> QWidget:
         self.widget_files = QWidget()
@@ -197,36 +233,87 @@ class MainWindow(QMainWindow):
                 pass
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if self.recording_process is not None:
+        busy = self.recording_process is not None or (
+            self.whisper_thread is not None and self.whisper_thread.isRunning()
+        )
+        if busy:
             reply = QMessageBox.question(
                 self,
-                "Gravação em andamento",
-                "Há uma gravação em andamento. Encerrar o app vai interrompê-la.\n\nDeseja sair mesmo assim?",
+                "Trabalho em andamento",
+                "Há uma gravação ou transcrição em andamento. Encerrar o app vai interrompê-la.\n\n"
+                "Deseja sair mesmo assim?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
             if reply == QMessageBox.StandardButton.No:
                 event.ignore()
                 return
-            self.recording_process.terminate()
-            self.recording_process.wait()
-            self.recording_process = None
 
-        if self.whisper_thread and self.whisper_thread.isRunning():
-            self.whisper_thread.terminate()
-            self.whisper_thread.wait()
-
+        self._stop_ffmpeg()
+        self._cleanup_ffmpeg_log()
+        self._stop_whisper()
         event.accept()
 
-    # ── Recording logic ───────────────────────────────────────────────────────
+    # ── Encerramento de processos ─────────────────────────────────────────────
+
+    def _stop_ffmpeg(self) -> None:
+        """Encerra o ffmpeg dando tempo de fechar o arquivo corretamente."""
+        process = self.recording_process
+        self.recording_process = None
+        self._timer.stop()
+        if process is None:
+            return
+        try:
+            process.terminate()
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        except OSError:
+            pass
+
+    def _stop_whisper(self) -> None:
+        """Cancela a transcrição e o processo filho, sem deixar Whisper órfão."""
+        thread = self.whisper_thread
+        if thread is None:
+            return
+        if thread.isRunning():
+            thread.cancel()
+            if not thread.wait(15000):
+                thread.terminate()
+                thread.wait()
+        self.whisper_thread = None
+
+    # ── Gravação ──────────────────────────────────────────────────────────────
+
+    def _resolve_sources(self) -> tuple[str, str] | None:
+        """Dispositivos a gravar conforme o modo configurado, ou ``None`` se faltar algum."""
+        mode = load_config()["source_mode"]
+        monitor = get_monitor() if mode in ("system", "both") else ""
+        mic = get_mic() if mode in ("mic", "both") else ""
+        missing = (mode in ("system", "both") and not monitor) or (
+            mode in ("mic", "both") and not mic
+        )
+        if missing:
+            QMessageBox.warning(
+                self, "Dispositivo não configurado",
+                "Nenhum dispositivo de áudio disponível para o modo escolhido.\n\n"
+                "Acesse: ⚙ Configurações (canto superior direito)",
+            )
+            return None
+        return monitor, mic
 
     def _start_recording(self) -> None:
-        name = _sanitize_filename(self.input_name.text().strip())
-        output_dir = self.input_dir.text().strip()
-
-        if not output_dir:
+        typed_dir = self.input_dir.text().strip()
+        if not typed_dir:
             QMessageBox.warning(self, "Diretório inválido", "Informe um diretório de saída.")
             return
+
+        # Caminho absoluto por dois motivos: um diretório relativo cairia no
+        # diretório de trabalho do launcher (raramente o esperado), e "." com um
+        # nome iniciado por "-" produziria um argumento que o ffmpeg leria como
+        # opção em vez de arquivo de saída.
+        output_dir = str(Path(typed_dir).expanduser().resolve())
 
         try:
             os.makedirs(output_dir, exist_ok=True)
@@ -240,64 +327,161 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Erro", f"Não foi possível criar o diretório:\n{exc}")
             return
 
-        monitor = get_monitor()
-        if not monitor:
-            QMessageBox.warning(
-                self, "Dispositivo não configurado",
-                "Nenhum dispositivo de áudio configurado.\n\n"
-                "Acesse: ⚙ Configurações (canto superior direito)",
+        if not os.access(output_dir, os.W_OK):
+            QMessageBox.critical(
+                self, "Sem permissão",
+                f"Sem permissão de escrita no diretório:\n{output_dir}",
             )
             return
 
-        self.audio_path = os.path.join(output_dir, f"{name}.mp3")
-        self.txt_path = os.path.join(output_dir, f"{name}.txt")
-        self.log_path = os.path.join(output_dir, f"{name}_erro.txt")
+        sources = self._resolve_sources()
+        if sources is None:
+            return
+        monitor, mic = sources
+
+        config = load_config()
+        name = _sanitize_filename(self.input_name.text().strip())
+        # unique_path evita que uma segunda gravação com o mesmo nome apague a primeira.
+        audio_file = unique_path(output_dir, name, "." + config["audio_format"])
+        self.audio_path = str(audio_file)
+        self.txt_path = str(audio_file.with_suffix(".txt"))
+        self.log_path = str(audio_file.with_name(audio_file.stem + "_erro.txt"))
         self.widget_files.hide()
 
         try:
+            log = tempfile.NamedTemporaryFile(
+                mode="w+", prefix="alex-transcritor-ffmpeg-", suffix=".log", delete=False
+            )
+        except OSError as exc:
+            QMessageBox.critical(self, "Erro", f"Não foi possível iniciar a gravação:\n{exc}")
+            return
+        self._ffmpeg_log = log.name
+
+        try:
             self.recording_process = subprocess.Popen(
-                ["ffmpeg", "-y", "-f", "pulse", "-i", monitor,
-                 "-ac", "1", "-ar", "16000", self.audio_path],
+                record_command(self.audio_path, monitor, mic, config["audio_format"]),
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=log,
+                stdin=subprocess.DEVNULL,
             )
         except FileNotFoundError:
             QMessageBox.critical(
                 self, "ffmpeg não encontrado",
                 "O comando 'ffmpeg' não foi encontrado.\n"
-                "Instale com: sudo apt install ffmpeg",
+                "Instale o pacote ffmpeg da sua distribuição.",
             )
             return
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Erro", f"Não foi possível iniciar a gravação:\n{exc}")
+            return
+        finally:
+            log.close()
 
+        self.input_dir.setText(output_dir)  # mostra onde os arquivos realmente vão cair
+        self._started_at = time.monotonic()
+        self._timer.start()
         self.btn_record.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.lbl_status.setText("🔴  Gravando...")
-        self.lbl_status.setStyleSheet("color: #e74c3c; font-size: 12px;")
+        self.btn_stop.setText("⏹  Parar")
+        self.progress.hide()
+        self._set_status("🔴  Gravando...", "#e74c3c")
+        # O ffmpeg só falha alguns instantes após iniciar; sem esta verificação a
+        # interface anuncia "gravando" enquanto nada é capturado.
+        QTimer.singleShot(FFMPEG_CHECK_MS, self._verify_recording_started)
+
+    def _verify_recording_started(self) -> None:
+        process = self.recording_process
+        if process is None or process.poll() is None:
+            return
+        detail = self._read_ffmpeg_log()
+        self._cleanup_ffmpeg_log()
+        self.recording_process = None
+        self._timer.stop()
+        self.btn_record.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self._set_status("❌  Falha ao gravar", "#e74c3c")
+        QMessageBox.critical(
+            self, "Falha na gravação",
+            "O ffmpeg encerrou logo após iniciar — nada foi gravado.\n\n"
+            "Verifique o dispositivo em ⚙ Configurações.\n\n" + detail,
+        )
+
+    def _read_ffmpeg_log(self) -> str:
+        try:
+            with open(self._ffmpeg_log, encoding="utf-8", errors="replace") as f:
+                return f.read()[-800:].strip()
+        except OSError:
+            return ""
+
+    def _tick(self) -> None:
+        elapsed = int(time.monotonic() - self._started_at)
+        self.lbl_status.setText(f"🔴  Gravando...  {elapsed // 60:02d}:{elapsed % 60:02d}")
+
+    # ── Transcrição ───────────────────────────────────────────────────────────
+
+    def _stop_clicked(self) -> None:
+        if self.recording_process is not None:
+            self._stop_recording()
+        elif self.whisper_thread is not None and self.whisper_thread.isRunning():
+            self._cancel_transcription()
+
+    def _cancel_transcription(self) -> None:
+        self.btn_stop.setEnabled(False)
+        self._set_status("Cancelando...", "#9a9a9a")
+        self._stop_whisper()
+        self.progress.hide()
+        self.btn_record.setEnabled(True)
+        self._set_status("Transcrição cancelada.", "#9a9a9a")
 
     def _stop_recording(self) -> None:
-        if self.recording_process:
-            self.recording_process.terminate()
-            self.recording_process.wait()
-            self.recording_process = None
+        self._stop_ffmpeg()
+        self._cleanup_ffmpeg_log()
+        # Deriva do arquivo gravado, não do campo: se o usuário mudar o diretório
+        # durante a gravação, o texto tem que acompanhar o áudio.
+        save_last_output_dir(str(Path(self.audio_path).parent))
 
-        save_last_output_dir(self.input_dir.text().strip())
-        self.btn_stop.setEnabled(False)
-        self.lbl_status.setText("⏳  Transcrevendo...")
-        self.lbl_status.setStyleSheet("color: #f39c12; font-size: 12px;")
+        self.btn_stop.setText("✕  Cancelar")
+        self.progress.setValue(0)
+        self.progress.show()
+        self._set_status("⏳  Transcrevendo...", "#f39c12")
 
+        config = load_config()
         self.whisper_thread = WhisperThread(
-            self.audio_path,
-            self.input_dir.text().strip(),
-            WHISPER_BIN,
+            audio_path=self.audio_path,
+            txt_path=self.txt_path,
+            whisper_bin=WHISPER_BIN,
+            model=config["model"],
+            language=config["language"],
+            device=config["device"],
+            initial_prompt=get_initial_prompt(),
+            enhance=config["enhance_audio"],
+            replacements=get_replacements(),
         )
-        self.whisper_thread.finished.connect(self._on_done)
-        self.whisper_thread.error.connect(self._on_error)
+        self.whisper_thread.succeeded.connect(self._on_done)
+        self.whisper_thread.failed.connect(self._on_error)
+        self.whisper_thread.progress.connect(self._on_progress)
         self.whisper_thread.start()
 
-    def _on_done(self) -> None:
+    def _cleanup_ffmpeg_log(self) -> None:
+        if not self._ffmpeg_log:
+            return
+        try:
+            os.unlink(self._ffmpeg_log)
+        except OSError:
+            pass
+        self._ffmpeg_log = ""
+
+    def _on_progress(self, percent: int, label: str) -> None:
+        self.progress.setValue(percent)
+        self._set_status(f"⏳  {label}", "#f39c12")
+
+    def _on_done(self, txt_path: str) -> None:
+        self.txt_path = txt_path
         self.btn_record.setEnabled(True)
-        self.lbl_status.setText("✅  Transcrição concluída!")
-        self.lbl_status.setStyleSheet("color: #2ecc71; font-size: 12px;")
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.setText("⏹  Parar")
+        self.progress.hide()
+        self._set_status(f"✅  Pronto — {Path(txt_path).name}", "#2ecc71")
         self.btn_open_audio.show()
         self.btn_open_text.show()
         self.btn_open_log.hide()
@@ -305,14 +489,25 @@ class MainWindow(QMainWindow):
 
     def _on_error(self, msg: str) -> None:
         self.btn_record.setEnabled(True)
-        self.lbl_status.setText("❌  Erro na transcrição")
-        self.lbl_status.setStyleSheet("color: #e74c3c; font-size: 12px;")
-        try:
-            with open(self.log_path, "w", encoding="utf-8") as f:
-                f.write(msg)
-        except OSError:
-            pass
-        self.btn_open_audio.hide()
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.setText("⏹  Parar")
+        self.progress.hide()
+        self._set_status("❌  Erro na transcrição", "#e74c3c")
+        self._write_log(msg)
+        self.btn_open_audio.show()  # o áudio existe mesmo quando a transcrição falha
         self.btn_open_text.hide()
         self.btn_open_log.show()
         self.widget_files.show()
+
+    def _write_log(self, msg: str) -> None:
+        try:
+            # 0600: a saída do Whisper pode conter caminhos e trechos do áudio.
+            fd = os.open(self.log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(msg)
+        except OSError:
+            pass
+
+    def _set_status(self, text: str, color: str) -> None:
+        self.lbl_status.setText(text)
+        self.lbl_status.setStyleSheet(f"color: {color}; font-size: 12px;")

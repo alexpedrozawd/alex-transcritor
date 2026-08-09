@@ -76,7 +76,7 @@ if ! python3 -m venv --help &>/dev/null 2>&1; then
     fi
 fi
 
-# ffmpeg
+# ffmpeg (o app também usa ffprobe para medir duração e nível do áudio)
 if ! command -v ffmpeg &>/dev/null; then
     step "Instalando ffmpeg..."
     if [[ -n "$PKG_UPDATE" ]]; then $PKG_UPDATE; fi
@@ -87,6 +87,7 @@ else
     FFVER=$(ffmpeg -version 2>&1 | head -1 | awk '{print $3}')
     ok "ffmpeg $FFVER"
 fi
+command -v ffprobe &>/dev/null || warn "ffprobe não encontrado — instale o pacote completo do ffmpeg"
 
 # PulseAudio / PipeWire
 if command -v pactl &>/dev/null; then
@@ -140,23 +141,28 @@ step "Instalando dependências Python (PyQt6 + OpenAI Whisper)..."
 "$PIP" install -r "$SCRIPT_DIR/requirements.txt" -q
 ok "Dependências instaladas"
 
-# ─── 7. PyTorch com CUDA (opcional) ──────────────────────────────────────────
-if command -v nvidia-smi &>/dev/null; then
-    step "GPU NVIDIA detectada — verificando CUDA..."
-    CUDA_VER=$(nvidia-smi 2>/dev/null | grep -oE "CUDA Version: [0-9]+" | grep -oE "[0-9]+$" | head -1 || echo "0")
-    if [[ "$CUDA_VER" -ge 12 ]]; then
-        step "Instalando PyTorch com CUDA $CUDA_VER..."
-        "$PIP" install torch --index-url https://download.pytorch.org/whl/cu121 -q
-        ok "PyTorch com CUDA 12 instalado (aceleração GPU ativada)"
-    elif [[ "$CUDA_VER" -ge 11 ]]; then
-        step "Instalando PyTorch com CUDA $CUDA_VER..."
-        "$PIP" install torch --index-url https://download.pytorch.org/whl/cu118 -q
-        ok "PyTorch com CUDA 11 instalado (aceleração GPU ativada)"
-    else
-        warn "CUDA $CUDA_VER não suportado — usando CPU"
-    fi
+# ─── 7. Verificar aceleração por GPU ─────────────────────────────────────────
+# O torch publicado no PyPI já vem com as bibliotecas CUDA. Reinstalá-lo a partir
+# dos índices cu118/cu121 quebrava a instalação: esses índices não têm wheels
+# para Python 3.13+ e, com 'set -e', o instalador abortava antes de criar o
+# launcher. Aqui só verificamos o que de fato ficou disponível.
+step "Verificando aceleração por GPU..."
+GPU_INFO=$("$PYTHON" - <<'PY' 2>/dev/null || true
+try:
+    import torch
+    if torch.cuda.is_available():
+        name = torch.cuda.get_device_name(0)
+        vram = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+        print(f"{name} ({vram:.1f} GB)")
+except Exception:
+    pass
+PY
+)
+if [[ -n "$GPU_INFO" ]]; then
+    ok "GPU disponível: $GPU_INFO"
+    echo -e "    Modelos que não couberem na VRAM rodam em CPU automaticamente."
 else
-    warn "GPU NVIDIA não detectada — Whisper usará CPU (transcrição mais lenta)"
+    warn "Sem GPU utilizável — a transcrição roda em CPU (mais lenta, mesma precisão)"
 fi
 
 # ─── 8. Remover __pycache__ copiado do source ────────────────────────────────
@@ -173,24 +179,34 @@ if [[ ! -f "$INSTALL_DIR/assets/icon.png" ]]; then
 fi
 
 # ─── 10. Garantir ~/.local/bin no PATH ───────────────────────────────────────
+# Marcador próprio: procurar por "local/bin" acertava qualquer comentário que
+# citasse o caminho e o PATH acabava não sendo adicionado.
+PATH_MARKER="# alex-transcritor: PATH"
 if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
     warn "~/.local/bin não está no PATH — adicionando ao ~/.bashrc e ~/.profile"
-    grep -qF 'local/bin' "$HOME/.bashrc" || echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
-    grep -qF 'local/bin' "$HOME/.profile" 2>/dev/null || echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.profile" 2>/dev/null || true
+    for RC in "$HOME/.bashrc" "$HOME/.profile"; do
+        grep -qF "$PATH_MARKER" "$RC" 2>/dev/null && continue
+        printf '\n%s\nexport PATH="$HOME/.local/bin:$PATH"\n' "$PATH_MARKER" >> "$RC" 2>/dev/null || true
+    done
     ok "PATH atualizado (reabra o terminal para efetivar)"
 fi
 
 # ─── 11. Baixar modelo Whisper (opcional) ────────────────────────────────────
 echo ""
-WHISPER_MODEL_FILE="$HOME/.cache/whisper/small.pt"
+DEFAULT_MODEL="turbo"
+WHISPER_MODEL_FILE="$HOME/.cache/whisper/large-v3-turbo.pt"
 if [[ -f "$WHISPER_MODEL_FILE" ]]; then
-    ok "Modelo Whisper 'small' já está baixado (~/.cache/whisper/small.pt)"
+    ok "Modelo Whisper '$DEFAULT_MODEL' já está baixado"
 else
-    ask "Baixar o modelo Whisper 'small' agora? (~244 MB, necessário na 1ª transcrição) [s/N]: "
+    ask "Baixar o modelo Whisper '$DEFAULT_MODEL' agora? (~1,5 GB, necessário na 1ª transcrição) [s/N]: "
     read -r DOWNLOAD_MODEL
     if [[ "$DOWNLOAD_MODEL" =~ ^[Ss]$ ]]; then
-        step "Baixando modelo Whisper small (~244 MB)..."
-        "$PYTHON" -c "import whisper; whisper.load_model('small')" && ok "Modelo baixado com sucesso"
+        step "Baixando modelo Whisper $DEFAULT_MODEL (~1,5 GB)..."
+        if "$PYTHON" -c "import whisper; whisper.load_model('$DEFAULT_MODEL', device='cpu')"; then
+            ok "Modelo baixado com sucesso"
+        else
+            warn "Download falhou — será tentado de novo na primeira transcrição"
+        fi
     else
         warn "Modelo não baixado — será baixado automaticamente na primeira transcrição"
     fi
@@ -203,11 +219,29 @@ if command -v pactl &>/dev/null; then
     if [[ -n "$MONITORS" ]]; then
         step "Fontes de áudio monitor detectadas:"
         echo "$MONITORS" | while IFS= read -r src; do echo "    • $src"; done
-        warn "Configure o dispositivo em: Menu tray → Configurações"
+        warn "Confira o dispositivo no botão ⚙ da janela do app"
     else
         warn "Nenhuma fonte monitor encontrada. Configure após conectar o dispositivo."
     fi
 fi
+
+# ─── 12b. Verificação final ──────────────────────────────────────────────────
+# Confere que o app realmente carrega antes de aparecer no menu; sem isso um
+# erro de importação só apareceria como janela que não abre.
+echo ""
+step "Verificando a instalação..."
+QT_QPA_PLATFORM=offscreen "$PYTHON" - "$INSTALL_DIR" <<'PY' || err "A verificação falhou — o app não subiria corretamente"
+import sys
+sys.path.insert(0, sys.argv[1])
+from alex_transcritor import __version__
+from alex_transcritor.app import _check_dependencies
+from alex_transcritor.ui.main_window import MainWindow  # noqa: F401
+missing = _check_dependencies()
+print(f"    versão {__version__}")
+if missing:
+    print("    faltando: " + ", ".join(missing))
+PY
+ok "Instalação verificada"
 
 # ─── 13. Criar launcher ──────────────────────────────────────────────────────
 # Criado por último: o app só fica acessível após tudo estar instalado e pronto
@@ -253,7 +287,8 @@ echo -e "    • Terminal: ${CYAN}alex-transcritor${NC}"
 echo ""
 echo -e "  ${BOLD}Arquivos instalados em:${NC} ${CYAN}$INSTALL_DIR${NC}"
 echo ""
-echo -e "  ${YELLOW}IMPORTANTE:${NC} Na primeira execução, acesse"
-echo -e "  ${BOLD}Menu tray → Configurações${NC} para selecionar"
-echo -e "  o dispositivo de áudio correto."
+echo -e "  ${YELLOW}IMPORTANTE:${NC} Na primeira execução, abra o botão"
+echo -e "  ${BOLD}⚙ (canto superior direito)${NC} para conferir o dispositivo"
+echo -e "  de áudio e cadastrar o vocabulário que costuma aparecer"
+echo -e "  nas suas gravações — é o que mais reduz erro de transcrição."
 echo ""

@@ -4,7 +4,6 @@ testpaths = ["tests"]
 [tool.coverage.run]
 source = ["alex_transcritor"]
 concurrency = ["thread"]
-omit = ["alex_transcritor/app.py"]  # entry point — requer display real
 
 [tool.coverage.report]
 show_missing = true

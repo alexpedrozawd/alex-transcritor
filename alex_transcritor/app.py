@@ -11,7 +11,7 @@ from .ui.main_window import MainWindow
 
 def _check_dependencies() -> list[str]:
     missing = []
-    for cmd in ("ffmpeg", "pactl"):
+    for cmd in ("ffmpeg", "ffprobe", "pactl"):
         if not shutil.which(cmd):
             missing.append(cmd)
     if not Path(WHISPER_BIN).exists():
@@ -26,6 +26,7 @@ def _is_already_running() -> bool:
     if connected:
         socket.write(b"show")
         socket.flush()
+        socket.waitForBytesWritten(300)
     socket.close()
     return connected
 
@@ -36,6 +37,17 @@ def _on_new_connection(server: QLocalServer, window: MainWindow) -> None:
         conn.waitForReadyRead(300)
         window._show_window()
         conn.disconnectFromServer()
+
+
+def _start_server(window: MainWindow) -> QLocalServer:
+    server = QLocalServer()
+    # Restringe o socket ao próprio usuário: sem isso qualquer conta local pode
+    # conectar nele e manipular a janela do app.
+    server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
+    QLocalServer.removeServer(SOCKET_NAME)
+    server.listen(SOCKET_NAME)
+    server.newConnection.connect(lambda: _on_new_connection(server, window))
+    return server
 
 
 def main() -> None:
@@ -60,13 +72,8 @@ def main() -> None:
         )
         warn.exec()
 
-    server = QLocalServer()
-    QLocalServer.removeServer(SOCKET_NAME)
-    server.listen(SOCKET_NAME)
-
     window = MainWindow()
     window.show()
-
-    server.newConnection.connect(lambda: _on_new_connection(server, window))
+    server = _start_server(window)  # noqa: F841 — mantém o socket vivo enquanto o app roda
 
     sys.exit(app.exec())

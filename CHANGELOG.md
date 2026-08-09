@@ -1,7 +1,114 @@
 # Changelog — Alex Transcritor
 
-Registro de todas as alterações aplicadas durante a análise de qualidade, testes e segurança
-(versão original → versão 2.0.0).
+Registro das alterações aplicadas durante as auditorias de qualidade, testes e segurança.
+
+---
+
+## [3.0.0] — 2026-08-08
+
+Auditoria focada em **precisão de transcrição**, robustez e segurança. Todos os números
+abaixo foram medidos executando o código, não estimados.
+
+### Precisão — o problema central
+
+Amostra em português do Brasil (86 palavras) comparada a uma transcrição de referência,
+num Intel i5-10300H com GTX 1650:
+
+| Configuração | WER |
+|---|---|
+| Versão 2.1.0 (`small`, MP3 24 kb/s, sem vocabulário) | 22,1% |
+| `small`, FLAC, com vocabulário | 19,8% |
+| **3.0.0 (`turbo`, FLAC, com vocabulário)** | **5,8%** |
+
+Erros típicos que sumiram: "Pedrona" → **Pedroza**, "Pipe Lady" → **PipeWire**,
+"Wodke"/"Word que" → **worker**, "e missões de adquivo" → **permissões de arquivo**.
+
+| Mudança | Detalhe |
+|---|---|
+| **Modelo `turbo` como padrão** | Antes fixo em `small`. Selecionável na interface, com a exigência de VRAM de cada opção |
+| **Vocabulário do usuário** | Nomes próprios e jargões viram `--initial_prompt`, enviesando a decodificação. Limitado a 700 caracteres (o Whisper aceita ~224 tokens) |
+| **Correções automáticas** | Substituições `errado => certo` aplicadas ao texto final |
+| **Gravação sem perda** | FLAC 16 kHz mono. O MP3 anterior saía a **24 kb/s** — qualidade de telefone. WAV e MP3 seguem disponíveis |
+| **Ganho adaptativo** | O app mede o pico e só amplifica quando há folga real. Em áudio baixo (−24 dBFS) o WER caiu de 23,3% para 12,8%; em áudio já adequado, filtrar **piorava** (19,8% → 24,4%), daí a medição prévia |
+| **`condition_on_previous_text=False`** | Evita que o modelo repita a janela anterior ao encontrar silêncio — causa clássica de alucinação |
+| **Ganho de pico em vez de `loudnorm`** | Testado: `highpass`+`loudnorm` dava 15,1%; ganho puro, 12,8% |
+
+### Correções de bugs
+
+| ID | Severidade | Problema | Correção |
+|----|---|----------|----------|
+| B1 | **Alta** | O Whisper captura exceções por arquivo, imprime `Skipping ... due to ...` e **sai com código 0**. O app exibia "✅ Transcrição concluída!" e o botão Texto não abria nada | O worker confere que o `.txt` existe, em vez de confiar no código de retorno |
+| B2 | **Alta** | fp16 gera logits NaN nesta GPU e `turbo`/`medium` estouram 4 GB de VRAM — falha total sem saída | Escolha automática de dispositivo por VRAM e **retentativa em CPU** quando a GPU falha |
+| B3 | **Alta** | Gravar duas vezes com o mesmo nome apagava áudio e transcrição anteriores | `unique_path()` gera `aula-2`, `aula-3`… |
+| B4 | **Alta** | Fechar o app durante a transcrição deixava o Whisper **órfão**, segurando GPU e vários GB de RAM | `WhisperThread.cancel()` mata o processo filho antes de encerrar a thread |
+| B5 | **Alta** | ffmpeg com dispositivo inválido morre em silêncio; a interface seguia exibindo "🔴 Gravando..." | Verificação após 1,2 s, com o erro real do ffmpeg na mensagem |
+| B6 | **Alta** | Instalador abortava em Python 3.13+ com GPU NVIDIA: reinstalava o torch dos índices cu118/cu121, que não têm wheels para essas versões — com `set -e`, o launcher nunca era criado | Passo removido; o torch do PyPI já traz CUDA. Agora só verifica e informa |
+| B7 | Média | Timeout fixo de 1 h matava transcrições longas (em CPU o `turbo` leva ~1,2× a duração) | `max(15 min, duração × 25)` |
+| B8 | Média | Trocar o diretório de saída durante a gravação mandava o texto para outro lugar | O destino é derivado do arquivo gravado |
+| B9 | Média | Dispositivo salvo que não existe mais fazia o ffmpeg gravar a fonte padrão, em silêncio | `get_monitor()`/`get_mic()` validam contra a lista atual do `pactl` |
+| B10 | Média | `save_config` truncava o arquivo antes de escrever: falha no meio perdia todas as configurações | Escrita atômica com arquivo temporário + `os.replace()` |
+| B11 | Média | Diretório relativo caía no CWD do launcher; `.` + nome iniciado por `-` gerava argumento que o ffmpeg lia como opção | Diretório resolvido para caminho absoluto |
+| B12 | Baixa | Sinais `finished`/`error` sombreavam `QThread.finished` | Renomeados para `succeeded`/`failed` |
+| B13 | Baixa | Nome de arquivo sem limite de tamanho | Limitado a 200 caracteres; vazio vira data e hora |
+| B14 | Baixa | Rótulo de versão `#2a2a2a` sobre `#111111` — contraste ~1,2:1, ilegível | Paleta de textos secundários clareada |
+| B15 | Baixa | Janela de tamanho fixo cortava texto com fontes de acessibilidade | Tamanho mínimo, redimensionável |
+| B16 | Baixa | `grep -qF 'local/bin'` casava com qualquer comentário e pulava o ajuste de PATH | Marcador próprio no `.bashrc`/`.profile` |
+| B17 | Baixa | `create_icon.py` e `icon.png` duplicados na raiz | Removidos (ficam em `scripts/` e `assets/`) |
+| B18 | Baixa | Sem verificação de escrita no diretório de saída | `os.access(W_OK)` antes de gravar |
+| B19 | Baixa | `ffprobe` não constava na checagem de dependências | Adicionado |
+
+### Segurança
+
+| Vetor | Situação anterior | Correção |
+|---|---|---|
+| Socket de instância única | Sem restrição — qualquer conta local podia conectar e manipular a janela | `QLocalServer.SocketOption.UserAccessOption` |
+| `config.json` adulterado | Valores repassados sem validação para a linha de comando | Validação de tipo e de domínio; chaves desconhecidas descartadas |
+| Log de erro | Permissão padrão (0644), podendo conter caminhos e trechos do áudio | Criado com `0600` |
+| Correções do usuário | Texto usado direto em `re.sub` | `re.escape()` no padrão e substituição por callable |
+| Arquivo temporário do ffmpeg | Ficava em `/tmp` após falha ou fechamento | Removido em todos os caminhos de saída |
+| Injeção de comando | — | Reconfirmado: todos os `subprocess` usam lista de argumentos, `shell=False` |
+
+Bateria adversarial executada: 11 nomes de arquivo hostis (travessia, byte nulo, metacaracteres,
+substituição de comando), 13 variações de `config.json` corrompido ou malicioso, 5 nomes de
+dispositivo hostis e 50 gravações concorrentes com o mesmo nome — nenhuma falha.
+`bandit` sem apontamentos; `pip-audit` sem vulnerabilidades conhecidas.
+
+### Novas funcionalidades
+
+| Funcionalidade | Descrição |
+|---|---|
+| **Captura de microfone e modo reunião** | Grava áudio do sistema, microfone, ou os dois mixados |
+| **Barra de progresso** | Percentual real lido da saída do Whisper, distinguindo download de modelo de transcrição |
+| **Cancelar transcrição** | O botão Parar vira Cancelar durante a transcrição |
+| **Contador de gravação** | Tempo decorrido em `mm:ss` |
+| **Configurações em abas** | Áudio, Transcrição e Vocabulário |
+| **Diagnóstico de hardware** | A tela de configurações informa a VRAM detectada e o que isso implica |
+| **Verificação pós-instalação** | O instalador confirma que o app carrega antes de criar o atalho no menu |
+
+### Arquitetura
+
+| Módulo | Papel |
+|---|---|
+| `audio.py` *(novo)* | Comandos do ffmpeg, medição de nível, nomes únicos |
+| `hardware.py` *(novo)* | Detecção de GPU via `nvidia-smi`, sem carregar o PyTorch |
+| `worker.py` | Reescrito: progresso, cancelamento, fallback de dispositivo, pós-processamento |
+| `config.py` | Reescrito: esquema com padrões, validação, escrita atômica |
+
+### Testes
+
+| Antes | Depois |
+|---|---|
+| 67 testes, 100% excluindo `app.py` | **201 testes, 99% incluindo `app.py`** |
+
+`test_worker.py` deixou de mockar `subprocess`: roda um Whisper falso que reproduz os
+comportamentos reais do binário — foi assim que a falha silenciosa (B1) ficou coberta.
+
+### Avaliado e não adotado
+
+**`faster-whisper`** (CTranslate2) faria `turbo` caber em 4 GB de VRAM com int8/float16 e
+rodaria 4× mais rápido. Não foi adotado porque o `ctranslate2` 4.8.1 não publica wheel para
+**Python 3.14**, que é o único interpretador disponível no sistema alvo. É o próximo salto
+natural quando houver wheel — o ponto de extensão é `WhisperThread._run_whisper()`.
 
 ---
 
