@@ -445,6 +445,8 @@ class MainWindow(QMainWindow):
                 )
             self.live_transcriber.segment.connect(self.live_panel.append_segment)
             self.live_transcriber.failed.connect(self.live_panel.show_unavailable)
+            if hasattr(self.live_transcriber, "status"):  # só o motor remoto tem
+                self.live_transcriber.status.connect(self.live_panel.show_status)
             self.live_transcriber.start()
         except Exception as exc:
             self.live_transcriber = None

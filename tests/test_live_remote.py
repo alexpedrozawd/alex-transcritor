@@ -11,25 +11,36 @@ from alex_transcritor import live_remote
 from alex_transcritor.live_remote import RemoteLiveTranscriber
 
 
+READY = json.dumps({"status": "ready"})
+
+
 class _FakeWS:
-    def __init__(self, incoming=None):
+    """Responde o handshake de ``ready`` por padrão, como o servidor real."""
+
+    def __init__(self, incoming=None, ready=READY):
         self.sent_text = []
         self.sent_bytes = []
         self.closed = False
-        self._incoming = list(incoming or [])
+        self.timeouts = []
+        self._incoming = ([ready] if ready is not None else []) + list(incoming or [])
 
-    def settimeout(self, _t):
-        pass
+    def settimeout(self, t):
+        self.timeouts.append(t)
 
     def send_text(self, s):
         self.sent_text.append(s)
 
     def send_bytes(self, b):
+        if self.closed:
+            raise real_websocket.WebSocketConnectionClosedException()
         self.sent_bytes.append(b)
 
     def recv(self):
         if self._incoming:
             return self._incoming.pop(0)
+        if self.closed:
+            raise real_websocket.WebSocketConnectionClosedException()
+        time.sleep(0.01)  # imita o bloqueio real, sem queimar CPU no teste
         raise real_websocket.WebSocketTimeoutException()
 
     def close(self):
@@ -84,14 +95,72 @@ def test_socket_timeout_is_generous_enough_for_real_sends(qtbot, monkeypatch):
     """Regressão de uso real: settimeout() vale para o socket inteiro, não só
     para o recv() de checagem — 0.1s derrubava a conexão sempre que um envio
     de PCM demorasse mais que isso, fácil de acontecer em qualquer rede real."""
-    calls = {}
     fake_ws = _FakeWS()
-    fake_ws.settimeout = lambda t: calls.__setitem__("timeout", t)
     monkeypatch.setattr(live_remote.websocket, "create_connection", lambda *a, **k: fake_ws)
     transcriber = RemoteLiveTranscriber(io.BytesIO(b"\x00" * 100), "http://host:8300", "tok")
     transcriber.start()
     assert transcriber.wait(3000)
-    assert calls["timeout"] >= 1.0
+    assert all(t >= 1.0 for t in fake_ws.timeouts), fake_ws.timeouts
+
+
+def test_audio_is_sent_without_waiting_for_server_messages(qtbot, monkeypatch):
+    """Regressão do bug que deixou o painel mudo em uso real: recv() e send()
+    no mesmo loop faziam cada volta esperar o timeout do socket por uma
+    mensagem inexistente, enquanto o áudio acumulava e era descartado — quase
+    nada chegava ao servidor, que nunca completava uma janela. O envio não
+    pode depender da chegada de mensagens."""
+    fake_ws = _FakeWS()  # nunca manda segmento nenhum, só o ready
+    monkeypatch.setattr(live_remote.websocket, "create_connection", lambda *a, **k: fake_ws)
+    payload = b"\x00" * (live_remote.READ_CHUNK_BYTES * 30)
+    transcriber = RemoteLiveTranscriber(io.BytesIO(payload), "http://host:8300", "tok")
+    transcriber.start()
+    assert transcriber.wait(5000), "não terminou a tempo"
+    # Sem descarte por backlog: tudo que foi lido do pipe chegou ao socket.
+    assert b"".join(fake_ws.sent_bytes) == payload
+
+
+def test_no_audio_is_sent_before_the_server_is_ready(qtbot, monkeypatch):
+    """Áudio mandado enquanto o servidor ainda carrega o modelo seria só
+    descartado — a sessão começaria surda."""
+    order = []
+
+    class _OrderTrackingWS(_FakeWS):
+        def recv(self):
+            order.append(("recv", len(self.sent_bytes)))
+            return super().recv()
+
+        def send_bytes(self, b):
+            order.append(("send", len(b)))
+            super().send_bytes(b)
+
+    fake_ws = _OrderTrackingWS()
+    monkeypatch.setattr(live_remote.websocket, "create_connection", lambda *a, **k: fake_ws)
+    transcriber = RemoteLiveTranscriber(io.BytesIO(b"\x00" * 100), "http://host:8300", "tok")
+    transcriber.start()
+    assert transcriber.wait(3000)
+    # O primeiro recv (handshake do ready) acontece antes de qualquer envio.
+    assert order[0] == ("recv", 0)
+
+
+def test_error_instead_of_ready_emits_failed(qtbot, monkeypatch):
+    fake_ws = _FakeWS(ready=json.dumps({"error": "GPU ocupada"}))
+    monkeypatch.setattr(live_remote.websocket, "create_connection", lambda *a, **k: fake_ws)
+    transcriber = RemoteLiveTranscriber(io.BytesIO(b"\x00" * 100), "http://host:8300", "tok")
+    with qtbot.waitSignal(transcriber.failed, timeout=3000) as blocker:
+        transcriber.start()
+    assert blocker.args[0] == "GPU ocupada"
+    transcriber.wait(2000)
+    assert fake_ws.sent_bytes == []  # nada de áudio depois de um erro
+
+
+def test_status_signal_reports_progress_before_streaming(qtbot, monkeypatch):
+    fake_ws = _FakeWS()
+    monkeypatch.setattr(live_remote.websocket, "create_connection", lambda *a, **k: fake_ws)
+    transcriber = RemoteLiveTranscriber(io.BytesIO(b"\x00" * 100), "http://host:8300", "tok")
+    with qtbot.waitSignal(transcriber.status, timeout=3000) as blocker:
+        transcriber.start()
+    assert "Conectando" in blocker.args[0]
+    transcriber.wait(3000)
 
 
 def test_stop_before_start_returns_quickly(qtbot, monkeypatch):

@@ -237,6 +237,9 @@ def test_live_transcribes_a_window_and_returns_segment(monkeypatch, tmp_path):
     with _client(monkeypatch, tmp_path) as client:
         with client.websocket_connect("/v1/live", headers=_headers()) as ws:
             ws.send_json({"language": "pt", "model": "tiny"})
+            # O "ready" vem antes de qualquer áudio: o cliente espera por ele
+            # para não gravar em cima da carga do modelo.
+            assert ws.receive_json() == {"status": "ready"}
             ws.send_bytes(_live_pcm_window())
             message = ws.receive_json()
     assert message == {"text": "ola mundo", "start_s": 0.0, "end_s": 1.0, "is_final": True}
@@ -264,6 +267,7 @@ def test_live_transcribe_failure_sends_error_but_keeps_session_open(monkeypatch,
     with _client(monkeypatch, tmp_path) as client:
         with client.websocket_connect("/v1/live", headers=_headers()) as ws:
             ws.send_json({"language": "pt", "model": "tiny"})
+            assert ws.receive_json() == {"status": "ready"}
             ws.send_bytes(_live_pcm_window())
             message = ws.receive_json()
     assert "janela corrompida" in message["error"]

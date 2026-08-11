@@ -49,6 +49,14 @@ class LivePanel(QWidget):
     def show_unavailable(self, reason: str) -> None:
         self._text.setPlainText(f"Transcrição ao vivo indisponível: {reason}")
 
+    def show_status(self, message: str) -> None:
+        """Aviso passageiro enquanto nada foi transcrito ainda — some sozinho
+        assim que o primeiro segmento chega. Nunca sobrescreve texto já
+        transcrito, para não apagar a transcrição por causa de um aviso."""
+        if self._lines:
+            return
+        self._text.setPlainText(message)
+
     def _render(self) -> None:
         body = " ".join(html.escape(p) for p in self._lines)
         self._text.setHtml(body)

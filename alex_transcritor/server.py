@@ -439,6 +439,10 @@ def create_app() -> FastAPI:
             await websocket.send_json({"error": f"Não foi possível carregar o modelo: {exc}"})
             await websocket.close(code=1011)
             return
+        # O cliente só começa a mandar áudio depois disto: carregar o modelo
+        # (na primeira vez, baixando os pesos) leva tempo, e áudio enviado
+        # nesse intervalo seria só descartado do lado dele.
+        await websocket.send_json({"status": "ready"})
 
         buffer = b""
         elapsed_s = 0.0

@@ -30,17 +30,18 @@ READ_CHUNK_BYTES = 4096
 #: rede lenta/instável, nunca vale a pena mandar áudio muito atrasado.
 MAX_QUEUED_CHUNKS = 50
 
-#: Tempo de espera por dado antes de checar se chegou algo do servidor ou se
-#: é hora de mandar mais áudio — mantém send/recv intercalados na mesma
-#: thread, sem precisar sincronizar acesso concorrente ao socket.
-#:
-#: ``websocket.WebSocket.settimeout()`` vale para o socket inteiro, não só
-#: para o ``recv()`` de checagem — testado em uso real: 0.1s derrubava a
-#: conexão sempre que um envio de PCM (``send_bytes``) demorasse mais que
-#: isso, o que é fácil de acontecer em qualquer rede real. Não prejudica a
-#: responsividade de receber segmentos: a fila de blocos pendentes já dirige
-#: o ritmo do loop, esse timeout só importa quando não há nada para mandar.
-POLL_TIMEOUT_S = 2.0
+CONNECT_TIMEOUT_S = 15.0
+
+#: Timeout do socket durante o streaming. Generoso de propósito: ``recv`` e
+#: ``send`` compartilham o mesmo timeout, e o servidor pode ficar sem ler o
+#: socket por vários segundos enquanto transcreve uma janela na GPU. Curto
+#: demais aqui derruba a conexão no meio de um envio legítimo.
+SOCKET_TIMEOUT_S = 30.0
+
+#: Espera pela confirmação de que o modelo terminou de carregar no servidor.
+#: A primeira sessão com um modelo ainda não usado inclui o download dos
+#: pesos, que pode levar minutos numa conexão lenta.
+READY_TIMEOUT_S = 300.0
 
 
 class RemoteLiveTranscriber(QThread):
@@ -48,6 +49,7 @@ class RemoteLiveTranscriber(QThread):
 
     segment = pyqtSignal(object)  # LiveSegment
     failed = pyqtSignal(str)      # não fatal — a gravação principal segue
+    status = pyqtSignal(str)      # aviso passageiro (conectando, preparando modelo...)
 
     def __init__(
         self,
@@ -87,27 +89,43 @@ class RemoteLiveTranscriber(QThread):
             reader.join(timeout=5)
             return
 
+        self.status.emit("Conectando ao servidor...")
         try:
             self._ws = websocket.create_connection(
                 _to_ws_url(self.remote_url) + "/v1/live",
                 header=[f"Authorization: Bearer {self.token}"],
-                timeout=15,
+                timeout=CONNECT_TIMEOUT_S,
             )
-            self._ws.settimeout(POLL_TIMEOUT_S)
             self._ws.send_text(json.dumps({"language": self.language, "model": self.model}))
+            self.status.emit("Preparando o modelo no servidor...")
+            self._ws.settimeout(READY_TIMEOUT_S)
+            ready = self._await_ready()
+            self._ws.settimeout(SOCKET_TIMEOUT_S)
         except Exception as exc:
             self.failed.emit(f"Não foi possível conectar ao servidor: {exc}")
             self.stop()
+            self._close_ws()
+            reader.join(timeout=5)
+            return
+        if not ready:
+            self.stop()
+            self._close_ws()
             reader.join(timeout=5)
             return
 
+        # Recepção em thread própria: ``recv`` e ``send`` no mesmo loop faziam
+        # cada volta esperar até o timeout do socket por uma mensagem que
+        # ainda não existia, enquanto o áudio se acumulava e era descartado
+        # pelo limite de backlog — na prática quase nada era enviado e o
+        # servidor nunca completava uma janela. websocket-client usa locks
+        # separados para envio (``lock``) e leitura (``readlock``) com
+        # ``enable_multithread`` (padrão), então isso é uso previsto.
+        receiver = threading.Thread(target=self._receive_loop, daemon=True)
+        receiver.start()
+
         already_failed = False
         while not self._stopped:
-            self._drain_incoming_segments()
-            try:
-                chunk = self._chunks.get(timeout=POLL_TIMEOUT_S)
-            except queue.Empty:
-                continue
+            chunk = self._chunks.get()
             if chunk is None:  # EOF do ffmpeg, ou stop() pedindo para sair
                 break
             if self._chunks.qsize() > MAX_QUEUED_CHUNKS:
@@ -121,21 +139,39 @@ class RemoteLiveTranscriber(QThread):
                 break
 
         self._stopped = True
-        self._close_ws()
+        self._close_ws()  # desbloqueia o recv pendente na thread de recepção
         reader.join(timeout=5)
+        receiver.join(timeout=5)
 
-    def _drain_incoming_segments(self) -> None:
-        """Lê o que já chegou do servidor sem bloquear — a conexão tem
-        timeout curto (``POLL_TIMEOUT_S``), então isso nunca segura o envio
-        de áudio por muito tempo."""
-        try:
-            message = self._ws.recv()
-        except websocket.WebSocketTimeoutException:
-            return
-        except Exception:
-            return
-        if not message:
-            return
+    def _await_ready(self) -> bool:
+        """Espera o servidor confirmar que o modelo está carregado.
+
+        Sem isso, todo o áudio capturado durante a carga (que na primeira vez
+        inclui o download dos pesos) seria enfileirado e descartado pelo
+        limite de backlog, e a sessão começaria surda.
+        """
+        payload = json.loads(self._ws.recv())
+        if "error" in payload:
+            self.failed.emit(payload["error"])
+            return False
+        if payload.get("status") != "ready":
+            self.failed.emit("Resposta inesperada do servidor ao iniciar a sessão.")
+            return False
+        return True
+
+    def _receive_loop(self) -> None:
+        """Só recebe segmentos — nunca segura o envio de áudio."""
+        while not self._stopped:
+            try:
+                message = self._ws.recv()
+            except websocket.WebSocketTimeoutException:
+                continue
+            except Exception:
+                return  # socket fechado no encerramento, ou conexão caiu
+            if message:
+                self._handle_message(message)
+
+    def _handle_message(self, message) -> None:
         try:
             payload = json.loads(message)
         except (TypeError, ValueError):
@@ -143,12 +179,18 @@ class RemoteLiveTranscriber(QThread):
         if "error" in payload:
             self.failed.emit(payload["error"])
             return
-        self.segment.emit(LiveSegment(
-            text=payload["text"],
-            start_s=payload["start_s"],
-            end_s=payload["end_s"],
-            is_final=payload["is_final"],
-        ))
+        if "status" in payload:
+            return  # o "ready" já foi consumido no handshake
+        try:
+            segment = LiveSegment(
+                text=payload["text"],
+                start_s=payload["start_s"],
+                end_s=payload["end_s"],
+                is_final=payload["is_final"],
+            )
+        except KeyError:
+            return
+        self.segment.emit(segment)
 
     def _read_loop(self) -> None:
         """Só drena o pipe, o mais rápido possível — nunca espera a rede."""
