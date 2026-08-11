@@ -238,6 +238,7 @@ pytest tests/ --cov --cov-report=term-missing
 |---|---|
 | `test_config.py` | validação, atomicidade, permissões, vocabulário |
 | `test_audio.py` | montagem de comandos, medição de nível, nomes únicos |
+| `test_constants.py` | resolução de `whisper_bin()` (venv → irmão do interpretador → PATH) |
 | `test_hardware.py` | detecção de GPU e escolha de dispositivo |
 | `test_worker.py` | pipeline completo com um Whisper falso |
 | `test_main_window.py` | estados da UI, validações, encerramento |
