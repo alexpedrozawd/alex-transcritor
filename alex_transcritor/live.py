@@ -39,6 +39,17 @@ TRAILING_SILENCE_S = 0.3
 
 READ_CHUNK_BYTES = 4096
 
+#: Se a fila de blocos pendentes passar disso, a transcrição caiu atrás do
+#: tempo real — pular o acúmulo em vez de gastar tempo (que só afunda mais)
+#: transcrevendo áudio que já não é mais "ao vivo" quando terminar. Sem esse
+#: teto, uma transcrição lenta nunca alcança o presente: a cada janela
+#: processada, mais áudio novo já se acumulou, e ao clicar Parar o app fica
+#: minutos "catching up" um atraso que não serve mais pra nada.
+#: Alto o bastante para tolerar a rajada normal de uma única janela cheia
+#: chegando de uma vez (~23 blocos de 4096 bytes) sem descartar áudio válido
+#: — ~6s de áudio pendente com READ_CHUNK_BYTES=4096 a 32000 bytes/s.
+MAX_QUEUED_CHUNKS = 50
+
 
 @dataclass
 class LiveSegment:
@@ -138,6 +149,12 @@ class LiveTranscriber(QThread):
             chunk = self._chunks.get()
             if chunk is None:  # EOF do ffmpeg, ou stop() pedindo para sair
                 break
+            if self._chunks.qsize() > MAX_QUEUED_CHUNKS:
+                # Muito atrás do tempo real: descarta este bloco e o que
+                # estava acumulado, sem transcrever — só avança o relógio.
+                buffer = b""
+                elapsed_s += len(chunk) / BYTES_PER_SECOND
+                continue
             buffer, window = accumulate(buffer, chunk)
             if window is None:
                 continue

@@ -145,3 +145,21 @@ def test_pipe_is_drained_without_waiting_for_slow_transcription(qtbot, monkeypat
     transcriber.stop()
     assert transcriber.wait(5000)
     writer.join(timeout=2)
+
+
+def test_falls_back_to_skipping_when_backlog_grows_too_large(qtbot, monkeypatch):
+    """Regressão: sem limite de acúmulo, uma transcrição lenta nunca alcança o
+    tempo real — a cada janela processada, mais áudio novo já se acumulou, e
+    ao clicar Parar o app fica minutos tentando esvaziar um atraso que já não
+    serve pra nada. Com 20 janelas de acúmulo a 0,5s cada, processar tudo sem
+    descartar levaria 10s+; com o limite, tem que sair bem mais rápido.
+    """
+    monkeypatch.setattr(live, "WhisperModel", _SlowFakeModel)
+    huge_payload = b"\x00" * (live.WINDOW_BYTES * 20)
+    transcriber = live.LiveTranscriber(io.BytesIO(huge_payload))
+    transcriber.start()
+    qtbot.wait(300)  # deixa o acúmulo se formar e o consumo começar
+    transcriber.stop()
+    assert transcriber.wait(3000), (
+        "não saiu a tempo — parece estar processando o acúmulo inteiro em vez de descartá-lo"
+    )
