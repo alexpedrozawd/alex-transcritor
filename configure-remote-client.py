@@ -6,6 +6,7 @@ import getpass
 import ipaddress
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
@@ -14,6 +15,11 @@ from urllib.parse import urlparse
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://100.84.64.122:8300")
+    parser.add_argument(
+        "--token-stdin",
+        action="store_true",
+        help="lê o token da entrada padrão (adequado para um pipe SSH)",
+    )
     args = parser.parse_args()
     url = args.url.rstrip("/")
     parsed = urlparse(url)
@@ -26,7 +32,10 @@ def main() -> None:
             raise SystemExit("HTTP sem TLS exige um IP Tailscale.") from None
         if address not in ipaddress.ip_network("100.64.0.0/10"):
             raise SystemExit("HTTP sem TLS exige um IP Tailscale.")
-    token = getpass.getpass("Token do servidor: ").strip()
+    token_source = sys.stdin.readline() if args.token_stdin else getpass.getpass(
+        "Token do servidor: "
+    )
+    token = token_source.strip()
     if len(token) < 32:
         raise SystemExit("Token inválido: esperado ao menos 32 caracteres.")
 

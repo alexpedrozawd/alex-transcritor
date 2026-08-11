@@ -61,11 +61,13 @@ Abra o app pelo menu de aplicativos (**Alex Transcritor**) ou digitando `alex-tr
 Para configurar o Nitro 5 para o servidor, execute uma vez dentro do repositório:
 
 ```bash
-python3 configure-remote-client.py
+ssh apsrv@100.84.64.122 \
+  "sed -n 's/^ALEX_TRANSCRITOR_TOKEN=//p' ~/.config/alex-transcritor/server.env" \
+  | python3 configure-remote-client.py --token-stdin
 ```
 
-Informe o token apenas no prompt oculto. Não coloque o token na linha de comando nem em
-arquivo versionado.
+O token passa dentro do SSH diretamente para o configurador: não aparece na tela, na
+linha de comando nem em arquivo versionado.
 
 **Antes da primeira gravação, clique no botão ⚙ no canto superior direito.** Vale conferir três coisas:
 
