@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import select
@@ -20,7 +21,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 
-from . import __version__, audio
+from . import __version__, audio, diarize
 from .constants import WHISPER_MODELS
 
 MAX_UPLOAD_BYTES = int(os.environ.get("ALEX_TRANSCRITOR_MAX_UPLOAD_BYTES", 2 * 1024**3))
@@ -29,6 +30,9 @@ MIN_FREE_VRAM_GB = float(os.environ.get("ALEX_TRANSCRITOR_MIN_FREE_VRAM_GB", "7"
 GPU_WAIT_SECONDS = int(os.environ.get("ALEX_TRANSCRITOR_GPU_WAIT_SECONDS", 3600))
 MAX_PENDING_JOBS = int(os.environ.get("ALEX_TRANSCRITOR_MAX_PENDING_JOBS", 8))
 MAX_STORED_JOBS = int(os.environ.get("ALEX_TRANSCRITOR_MAX_STORED_JOBS", 100))
+# pyannote não expõe progresso incremental como o stderr do whisper CLI, então
+# não dá pra reaproveitar o loop de PROGRESS_RE — um teto simples é suficiente.
+DIARIZE_TIMEOUT_SECONDS = int(os.environ.get("ALEX_TRANSCRITOR_DIARIZE_TIMEOUT_SECONDS", 1800))
 ALLOWED_SUFFIXES = {".flac", ".wav", ".mp3", ".m4a", ".ogg", ".opus", ".webm"}
 PROGRESS_RE = re.compile(rb"(\d{1,3})%\|")
 
@@ -42,11 +46,13 @@ class Job:
     language: str
     initial_prompt: str
     enhance: bool
+    diarize: bool = False
     status: str = "queued"
     progress: int = 0
     message: str = "Na fila do servidor..."
     error: str = ""
     result: str = ""
+    diarization_note: str = ""
     created_at: float = field(default_factory=time.time)
     process: subprocess.Popen | None = field(default=None, repr=False)
     cancelled: bool = False
@@ -57,20 +63,28 @@ class Job:
             "model": self.model,
             "language": self.language,
             "enhance": self.enhance,
+            "diarize": self.diarize,
             "status": self.status,
             "progress": self.progress,
             "message": self.message,
             "error": self.error,
+            "diarization_note": self.diarization_note,
             "created_at": self.created_at,
         }
 
 
 class JobManager:
-    def __init__(self, whisper_bin: str) -> None:
+    # "" significa "sem token configurado", não é uma senha embutida.
+    def __init__(self, whisper_bin: str, hf_token: str = "") -> None:  # nosec B107
         self.whisper_bin = whisper_bin
+        self.hf_token = hf_token
         self.jobs: dict[str, Job] = {}
         self.lock = threading.RLock()
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="transcription")
+        # Executor próprio para a diarização: permite aplicar timeout via
+        # Future.result(timeout=...), já que o pyannote não tem um ponto de
+        # verificação periódico como o stderr do whisper.
+        self._diarize_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="diarization")
 
     def add(self, job: Job) -> None:
         with self.lock:
@@ -134,7 +148,17 @@ class JobManager:
             produced = self._run_whisper(job, source)
             if job.cancelled:
                 return
-            job.result = produced.read_text(encoding="utf-8")
+            if job.diarize:
+                try:
+                    job.message = "Identificando participantes..."
+                    job.result = self._run_diarization_and_merge(job, source, produced)
+                except Exception as exc:
+                    # A diarização é um extra opcional: falhar nela não pode
+                    # transformar uma transcrição boa num job com falha.
+                    job.result = self._plain_text_from_whisper_json(produced)
+                    job.diarization_note = f"Diarização indisponível: {exc}"
+            else:
+                job.result = produced.read_text(encoding="utf-8")
             job.progress = 100
             job.status = "succeeded"
             job.message = "Transcrição concluída no servidor."
@@ -177,11 +201,14 @@ class JobManager:
     def _run_whisper(self, job: Job, source: str) -> Path:
         outdir = Path(job.workdir) / "output"
         outdir.mkdir()
+        # json quando diarizando: precisa dos timestamps por segmento
+        # (campo "segments") para casar a fala com os turnos do pyannote.
+        output_format = "json" if job.diarize else "txt"
         cmd = [
             self.whisper_bin,
             source,
             "--model", job.model,
-            "--output_format", "txt",
+            "--output_format", output_format,
             "--output_dir", str(outdir),
             "--device", "cuda",
             "--fp16", "True",
@@ -226,11 +253,27 @@ class JobManager:
             if job.process.poll() is not None:
                 break
         returncode = job.process.wait()
-        produced = sorted(outdir.glob("*.txt"))
+        produced = sorted(outdir.glob(f"*.{output_format}"))
         if returncode != 0 or not produced:
             detail = tail.decode("utf-8", "replace").strip()[-4000:]
             raise RuntimeError(detail or f"Whisper terminou com código {returncode} sem resultado.")
         return produced[0]
+
+    @staticmethod
+    def _plain_text_from_whisper_json(path: Path) -> str:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data["text"]
+
+    def _run_diarization_and_merge(self, job: Job, source: str, whisper_json_path: Path) -> str:
+        if not self.hf_token:
+            raise RuntimeError("ALEX_TRANSCRITOR_HF_TOKEN não configurado no servidor.")
+        self._wait_for_gpu(job)
+        if job.cancelled:
+            raise RuntimeError("Transcrição cancelada.")
+        whisper_data = json.loads(whisper_json_path.read_text(encoding="utf-8"))
+        future = self._diarize_executor.submit(diarize.run_pipeline, source, self.hf_token)
+        turns = future.result(timeout=DIARIZE_TIMEOUT_SECONDS)
+        return diarize.merge_with_transcript(whisper_data["segments"], turns)
 
 
 def _free_vram_gb() -> float:
@@ -250,12 +293,16 @@ def create_app() -> FastAPI:
     token = os.environ.get("ALEX_TRANSCRITOR_TOKEN", "")
     allowed_ip = os.environ.get("ALEX_TRANSCRITOR_ALLOWED_IP", "")
     whisper_bin = os.environ.get("ALEX_TRANSCRITOR_WHISPER_BIN") or shutil.which("whisper") or ""
+    # Sem validação obrigatória: diarização é opcional e minoritária — um
+    # token do Hugging Face ausente não pode derrubar a transcrição comum,
+    # que é o uso principal do servidor. Ver JobManager._run_diarization_and_merge.
+    hf_token = os.environ.get("ALEX_TRANSCRITOR_HF_TOKEN", "")
     if not token or len(token) < 32:
         raise RuntimeError("ALEX_TRANSCRITOR_TOKEN deve ter pelo menos 32 caracteres.")
     if not whisper_bin or not Path(whisper_bin).exists():
         raise RuntimeError("Binário Whisper não encontrado.")
 
-    manager = JobManager(whisper_bin)
+    manager = JobManager(whisper_bin, hf_token=hf_token)
     app = FastAPI(title="Alex Transcritor Server", version=__version__, docs_url=None, redoc_url=None)
 
     def authenticate(request: Request) -> None:
@@ -276,6 +323,7 @@ def create_app() -> FastAPI:
         language: str = Form("pt"),
         initial_prompt: str = Form(""),
         enhance: bool = Form(True),
+        diarize: bool = Form(False),
     ) -> dict:
         if model not in WHISPER_MODELS:
             raise HTTPException(status_code=422, detail="Modelo inválido.")
@@ -318,6 +366,7 @@ def create_app() -> FastAPI:
             language=language,
             initial_prompt=initial_prompt,
             enhance=enhance,
+            diarize=diarize,
         )
         try:
             manager.add(job)

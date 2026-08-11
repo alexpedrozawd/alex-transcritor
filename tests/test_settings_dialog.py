@@ -93,6 +93,16 @@ def test_live_transcription_defaults_off(dialog):
     assert dlg.combo_live_model.currentData() == cfg.DEFAULTS["live_model"]
 
 
+def test_diarize_defaults_off(dialog):
+    dlg = dialog()
+    assert not dlg.check_diarize.isChecked()
+
+
+def test_diarize_preselected(dialog):
+    dlg = dialog(diarize_speakers=True)
+    assert dlg.check_diarize.isChecked()
+
+
 def test_vocabulary_and_replacements_loaded(dialog):
     dlg = dialog(vocabulary="PipeWire", replacements="a => b")
     assert dlg.edit_vocabulary.toPlainText() == "PipeWire"
@@ -129,6 +139,12 @@ def test_remote_backend_enables_server_fields(dialog):
     assert dlg.input_remote_url.isEnabled()
     assert dlg.input_remote_token.isEnabled()
     assert not dlg.combo_device.isEnabled()
+    assert dlg.check_diarize.isEnabled()
+
+
+def test_local_backend_disables_diarize(dialog):
+    dlg = dialog(transcription_backend="local")
+    assert not dlg.check_diarize.isEnabled()
 
 
 # ── Salvar ────────────────────────────────────────────────────────────────────
@@ -149,6 +165,7 @@ def test_save_writes_every_field(dialog):
     dlg.edit_replacements.setPlainText("errado => certo")
     dlg.check_live.setChecked(True)
     dlg.combo_live_model.setCurrentIndex(dlg.combo_live_model.findData("base"))
+    dlg.check_diarize.setChecked(True)
     dlg._save()
 
     saved = cfg.load_config()
@@ -167,6 +184,7 @@ def test_save_writes_every_field(dialog):
     assert saved["remote_token"] == "x" * 32
     assert saved["live_transcription"] is True
     assert saved["live_model"] == "base"
+    assert saved["diarize_speakers"] is True
 
 
 def test_save_does_not_store_placeholder_as_device(qtbot, sources):

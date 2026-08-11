@@ -11,14 +11,27 @@ TOKEN = "a" * 32
 
 
 def _fake_whisper(tmp_path):
+    """Grava .json (com "text"/"segments") quando --output_format é json,
+    .txt caso contrário — imita a diferença real do CLI do whisper."""
     script = tmp_path / "whisper"
     script.write_text(
         """#!/usr/bin/env python3
-import pathlib, sys
+import json, pathlib, sys
 source = pathlib.Path(sys.argv[1])
 outdir = pathlib.Path(sys.argv[sys.argv.index('--output_dir') + 1])
+fmt = sys.argv[sys.argv.index('--output_format') + 1]
 print('50%|#####|', file=sys.stderr)
-(outdir / (source.stem + '.txt')).write_text('texto remoto', encoding='utf-8')
+if fmt == 'json':
+    data = {
+        'text': 'texto remoto',
+        'segments': [
+            {'start': 0.0, 'end': 1.0, 'text': 'ola'},
+            {'start': 1.0, 'end': 2.0, 'text': 'tudo bem'},
+        ],
+    }
+    (outdir / (source.stem + '.json')).write_text(json.dumps(data), encoding='utf-8')
+else:
+    (outdir / (source.stem + '.txt')).write_text('texto remoto', encoding='utf-8')
 """,
         encoding="utf-8",
     )
@@ -26,15 +39,28 @@ print('50%|#####|', file=sys.stderr)
     return script
 
 
-def _client(monkeypatch, tmp_path):
+def _client(monkeypatch, tmp_path, hf_token=None):
     monkeypatch.setenv("ALEX_TRANSCRITOR_TOKEN", TOKEN)
     monkeypatch.setenv("ALEX_TRANSCRITOR_WHISPER_BIN", str(_fake_whisper(tmp_path)))
     monkeypatch.setattr(server, "_free_vram_gb", lambda: 15.0)
+    if hf_token is None:
+        monkeypatch.delenv("ALEX_TRANSCRITOR_HF_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("ALEX_TRANSCRITOR_HF_TOKEN", hf_token)
     return TestClient(server.create_app())
 
 
 def _headers(token=TOKEN):
     return {"Authorization": f"Bearer {token}"}
+
+
+def _wait_for_job(client, job_id):
+    for _ in range(100):
+        job = client.get(f"/v1/jobs/{job_id}", headers=_headers()).json()
+        if job["status"] not in ("queued", "running"):
+            return job
+        time.sleep(0.02)
+    raise AssertionError(f"job {job_id} não terminou a tempo: {job}")
 
 
 def test_requires_strong_token(monkeypatch):
@@ -104,3 +130,71 @@ def test_allowed_source_ip(monkeypatch, tmp_path):
     monkeypatch.setenv("ALEX_TRANSCRITOR_ALLOWED_IP", "100.88.218.16")
     with _client(monkeypatch, tmp_path) as client:
         assert client.get("/health", headers=_headers()).status_code == 403
+
+
+# ── Diarização ─────────────────────────────────────────────────────────────────
+
+def _post_diarize_job(client):
+    return client.post(
+        "/v1/jobs",
+        headers=_headers(),
+        data={"model": "turbo", "language": "pt", "enhance": "false", "diarize": "true"},
+        files={"audio": ("amostra.flac", b"fake audio")},
+    )
+
+
+def test_diarize_without_hf_token_degrades_gracefully(monkeypatch, tmp_path):
+    """Sem ALEX_TRANSCRITOR_HF_TOKEN configurado, a diarização não pode
+    derrubar a transcrição comum — o job precisa suceder com texto plano."""
+    with _client(monkeypatch, tmp_path, hf_token=None) as client:
+        job_id = _post_diarize_job(client).json()["id"]
+        job = _wait_for_job(client, job_id)
+        assert job["status"] == "succeeded", job
+        assert job["diarization_note"]
+        result = client.get(f"/v1/jobs/{job_id}/result", headers=_headers())
+        assert result.text == "texto remoto"
+
+
+def test_diarize_pipeline_failure_degrades_gracefully(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        server.diarize, "run_pipeline",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("GPU sem memória")),
+    )
+    with _client(monkeypatch, tmp_path, hf_token="hf_" + "x" * 30) as client:
+        job_id = _post_diarize_job(client).json()["id"]
+        job = _wait_for_job(client, job_id)
+        assert job["status"] == "succeeded", job
+        assert "GPU sem memória" in job["diarization_note"]
+        result = client.get(f"/v1/jobs/{job_id}/result", headers=_headers())
+        assert result.text == "texto remoto"
+
+
+def test_diarize_success_labels_speakers(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        server.diarize, "run_pipeline",
+        lambda *a, **k: [(0.0, 1.0, "SPEAKER_00"), (1.0, 2.0, "SPEAKER_01")],
+    )
+    with _client(monkeypatch, tmp_path, hf_token="hf_" + "x" * 30) as client:
+        job_id = _post_diarize_job(client).json()["id"]
+        job = _wait_for_job(client, job_id)
+        assert job["status"] == "succeeded", job
+        assert not job["diarization_note"]
+        result = client.get(f"/v1/jobs/{job_id}/result", headers=_headers())
+        assert "Pessoa 1: ola" in result.text
+        assert "Pessoa 2: tudo bem" in result.text
+
+
+def test_diarize_defaults_to_false(monkeypatch, tmp_path):
+    """Sem o campo 'diarize' no form, o job usa o passe txt normal, sem custo extra."""
+    with _client(monkeypatch, tmp_path) as client:
+        response = client.post(
+            "/v1/jobs",
+            headers=_headers(),
+            data={"enhance": "false"},
+            files={"audio": ("amostra.flac", b"fake audio")},
+        )
+        job = _wait_for_job(client, response.json()["id"])
+        assert job["status"] == "succeeded", job
+        assert job["diarize"] is False
+        result = client.get(f"/v1/jobs/{job['id']}/result", headers=_headers())
+        assert result.text == "texto remoto"

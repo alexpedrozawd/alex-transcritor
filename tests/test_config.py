@@ -82,6 +82,15 @@ def test_load_config_live_transcription_defaults_off():
     assert cfg.load_config()["live_transcription"] is False
 
 
+def test_load_config_diarize_speakers_defaults_off():
+    assert cfg.load_config()["diarize_speakers"] is False
+
+
+def test_load_config_ignores_wrong_type_diarize_speakers(tmp_path):
+    (tmp_path / "config.json").write_text('{"diarize_speakers": "sim"}')
+    assert cfg.load_config()["diarize_speakers"] is False
+
+
 # ── save_config ───────────────────────────────────────────────────────────────
 
 def test_save_config_creates_file(tmp_path):

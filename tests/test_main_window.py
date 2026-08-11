@@ -357,6 +357,7 @@ def test_stop_recording_passes_configured_options(window, popen, no_thread, tmp_
     assert kwargs["device"] == "cpu"
     assert "PipeWire" in kwargs["initial_prompt"]
     assert kwargs["txt_path"] == window.txt_path
+    assert "diarize" not in kwargs  # motor local nunca recebe diarização
 
 
 def test_stop_recording_uses_remote_server(window, popen, tmp_path, monkeypatch):
@@ -367,6 +368,7 @@ def test_stop_recording_uses_remote_server(window, popen, tmp_path, monkeypatch)
         remote_url="http://100.84.64.122:8300",
         remote_token="x" * 32,
         model="turbo",
+        diarize_speakers=True,
     )
     window.input_dir.setText(str(tmp_path))
     window._start_recording()
@@ -375,6 +377,7 @@ def test_stop_recording_uses_remote_server(window, popen, tmp_path, monkeypatch)
     assert kwargs["remote_url"] == "http://100.84.64.122:8300"
     assert kwargs["token"] == "x" * 32
     assert kwargs["model"] == "turbo"
+    assert kwargs["diarize"] is True
     remote.return_value.start.assert_called_once()
 
 

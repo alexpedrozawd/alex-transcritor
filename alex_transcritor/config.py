@@ -36,6 +36,7 @@ DEFAULTS: dict = {
     "transcription_backend": "local",
     "remote_url": "http://100.84.64.122:8300",
     REMOTE_TOKEN_KEY: "",
+    "diarize_speakers": False,  # opt-in, remoto apenas — exige token HF configurado no servidor
     "live_transcription": False,  # opt-in — exige faster-whisper instalado
     "live_model": "small",        # menor que o padrão do passe final, para latência baixa
     "live_device": "cpu",         # evita contenção de VRAM com o passe final na GPU

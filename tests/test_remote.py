@@ -84,3 +84,81 @@ def test_cancel_notifies_server(tmp_path, monkeypatch):
     thread._job_id = "job-1"
     thread.cancel()
     assert called
+
+
+# ── Diarização ─────────────────────────────────────────────────────────────────
+
+def test_remote_pipeline_sends_diarize_flag(qtbot, tmp_path, monkeypatch):
+    audio = tmp_path / "audio.flac"
+    audio.write_bytes(b"audio")
+    target = tmp_path / "audio.txt"
+    thread = RemoteWhisperThread(
+        str(audio), str(target), "http://100.84.64.122:8300", "x" * 32,
+        "turbo", "pt", diarize=True,
+    )
+    session = Session()
+    posted_data = {}
+    original_post = session.post
+
+    def _capturing_post(*args, **kwargs):
+        posted_data.update(kwargs.get("data", {}))
+        return original_post(*args, **kwargs)
+
+    session.post = _capturing_post
+    thread._session = session
+    monkeypatch.setattr("alex_transcritor.remote.time.sleep", lambda _seconds: None)
+    with qtbot.waitSignal(thread.succeeded, timeout=1000):
+        thread.run()
+    assert posted_data["diarize"] == "true"
+
+
+def test_remote_pipeline_omits_diarize_by_default(qtbot, tmp_path, monkeypatch):
+    audio = tmp_path / "audio.flac"
+    audio.write_bytes(b"audio")
+    target = tmp_path / "audio.txt"
+    thread = RemoteWhisperThread(
+        str(audio), str(target), "http://100.84.64.122:8300", "x" * 32, "turbo", "pt",
+    )
+    session = Session()
+    posted_data = {}
+    original_post = session.post
+
+    def _capturing_post(*args, **kwargs):
+        posted_data.update(kwargs.get("data", {}))
+        return original_post(*args, **kwargs)
+
+    session.post = _capturing_post
+    thread._session = session
+    monkeypatch.setattr("alex_transcritor.remote.time.sleep", lambda _seconds: None)
+    with qtbot.waitSignal(thread.succeeded, timeout=1000):
+        thread.run()
+    assert posted_data["diarize"] == "false"
+
+
+class SessionWithDiarizationNote(Session):
+    def get(self, url, **kwargs):
+        if url.endswith("/result"):
+            return Response(text="texto plano")
+        self.polls += 1
+        if self.polls > 1:
+            return Response({
+                "status": "succeeded", "progress": 100, "message": "Concluído",
+                "diarization_note": "Diarização indisponível: token ausente.",
+            })
+        return Response({"status": "running", "progress": 50, "message": "Processando"})
+
+
+def test_remote_surfaces_diarization_note_via_progress(qtbot, tmp_path, monkeypatch):
+    audio = tmp_path / "audio.flac"
+    audio.write_bytes(b"audio")
+    target = tmp_path / "audio.txt"
+    thread = RemoteWhisperThread(
+        str(audio), str(target), "http://100.84.64.122:8300", "x" * 32, "turbo", "pt",
+    )
+    thread._session = SessionWithDiarizationNote()
+    monkeypatch.setattr("alex_transcritor.remote.time.sleep", lambda _seconds: None)
+    messages = []
+    thread.progress.connect(lambda _percent, msg: messages.append(msg))
+    with qtbot.waitSignal(thread.succeeded, timeout=1000):
+        thread.run()
+    assert any("Diarização indisponível" in m for m in messages)

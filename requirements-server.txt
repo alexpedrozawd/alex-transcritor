@@ -3,3 +3,14 @@ openai-whisper==20250625
 fastapi==0.141.1
 uvicorn[standard]==0.52.1
 python-multipart==0.0.32
+
+# Diarização opcional (identificar quem fala). 3.3.2, não a linha 4.x mais
+# recente: a 4.0.7 depende de pyannoteai-sdk (API paga na nuvem), o que
+# contradiz o "100% offline" deste app. A 3.3.2 não tem essa dependência.
+#
+# ATENÇÃO na instalação: este servidor já tem um torch ROCm instalado à
+# parte (ver comentário acima). `pip install pyannote.audio` normal pode
+# puxar torch/torchaudio CUDA/CPU como dependência transitiva e sobrescrever
+# o build ROCm — instalar com --no-deps e resolver as demais dependências à
+# mão, ou validar num venv descartável antes de aplicar em produção.
+pyannote.audio==3.3.2

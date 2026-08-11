@@ -28,6 +28,7 @@ class RemoteWhisperThread(QThread):
         language: str,
         initial_prompt: str = "",
         enhance: bool = True,
+        diarize: bool = False,
         replacements: list[tuple[str, str]] | None = None,
     ) -> None:
         super().__init__()
@@ -39,6 +40,7 @@ class RemoteWhisperThread(QThread):
         self.language = language
         self.initial_prompt = initial_prompt
         self.enhance = enhance
+        self.diarize = diarize
         self.replacements = replacements or []
         self._cancelled = False
         self._job_id = ""
@@ -91,6 +93,7 @@ class RemoteWhisperThread(QThread):
             "language": self.language,
             "initial_prompt": self.initial_prompt,
             "enhance": json.dumps(self.enhance),
+            "diarize": json.dumps(self.diarize),
         }
         with open(self.audio_path, "rb") as source:
             response = self._session.post(
@@ -114,6 +117,8 @@ class RemoteWhisperThread(QThread):
             status = job["status"]
             self.progress.emit(int(job.get("progress", 0)), job.get("message", "Transcrevendo..."))
             if status == "succeeded":
+                if note := job.get("diarization_note"):
+                    self.progress.emit(100, note)
                 self._download_result()
                 return
             if status in ("failed", "cancelled"):

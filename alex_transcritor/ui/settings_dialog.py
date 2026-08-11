@@ -177,6 +177,14 @@ class SettingsDialog(QDialog):
         form.addRow(QLabel("PROCESSAMENTO"), self.combo_device)
         form.addRow(self._hint(self._hardware_hint()))
 
+        self.check_diarize = QCheckBox("Identificar quem falou (Pessoa 1, Pessoa 2...)")
+        self.check_diarize.setChecked(self.config["diarize_speakers"])
+        form.addRow(QLabel(""), self.check_diarize)
+        form.addRow(self._hint(
+            "Só funciona no servidor remoto e aumenta o tempo de processamento. "
+            "Os falantes recebem rótulos genéricos, sem identificação por nome."
+        ))
+
         self.check_live = QCheckBox("Mostrar transcrição em tempo real durante a gravação")
         self.check_live.setChecked(self.config["live_transcription"])
         self.combo_live_model = _combo(
@@ -251,6 +259,7 @@ class SettingsDialog(QDialog):
         self.input_remote_url.setEnabled(remote)
         self.input_remote_token.setEnabled(remote)
         self.combo_device.setEnabled(not remote)
+        self.check_diarize.setEnabled(remote)
 
     @staticmethod
     def _selected_source(combo: QComboBox) -> str:
@@ -270,6 +279,7 @@ class SettingsDialog(QDialog):
             transcription_backend=self.combo_backend.currentData(),
             remote_url=self.input_remote_url.text().strip().rstrip("/"),
             remote_token=self.input_remote_token.text().strip(),
+            diarize_speakers=self.check_diarize.isChecked(),
             vocabulary=self.edit_vocabulary.toPlainText().strip(),
             replacements=self.edit_replacements.toPlainText().strip(),
             live_transcription=self.check_live.isChecked(),

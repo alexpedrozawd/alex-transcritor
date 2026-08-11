@@ -509,7 +509,8 @@ class MainWindow(QMainWindow):
         )
         if config["transcription_backend"] == "remote":
             self.whisper_thread = RemoteWhisperThread(
-                remote_url=config["remote_url"], token=config["remote_token"], **common
+                remote_url=config["remote_url"], token=config["remote_token"],
+                diarize=config["diarize_speakers"], **common
             )
         else:
             self.whisper_thread = WhisperThread(
