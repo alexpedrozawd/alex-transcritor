@@ -60,6 +60,40 @@ def test_record_command_codec_per_format(fmt, codec):
     assert cmd[cmd.index("-c:a") + 1] == codec
 
 
+# ── record_command — live_pcm ─────────────────────────────────────────────────
+
+def test_record_command_default_unchanged_without_live_pcm():
+    """Regressão: live_pcm=False (padrão) tem que ser idêntico ao comando de hoje."""
+    with_default = audio.record_command("/out/a.flac", monitor="mon")
+    explicit_off = audio.record_command("/out/a.flac", monitor="mon", live_pcm=False)
+    assert with_default == explicit_off
+    assert "pipe:1" not in with_default
+
+
+def test_record_command_live_pcm_single_source_appends_second_output():
+    cmd = audio.record_command("/out/a.flac", monitor="mon", live_pcm=True)
+    assert cmd[-7:] == ["-f", "s16le", "-ar", "16000", "-ac", "1", "pipe:1"]
+    # o arquivo principal continua a primeira saída, intocada
+    assert cmd[cmd.index("-c:a") + 1] == "flac"
+    assert "/out/a.flac" in cmd
+
+
+def test_record_command_live_pcm_two_sources_splits_the_mix():
+    cmd = audio.record_command("/out/a.flac", monitor="mon", mic="mic", live_pcm=True)
+    joined = " ".join(cmd)
+    assert "asplit=2[mix_principal][mix_vivo]" in joined
+    assert cmd.count("-map") == 2
+    assert "[mix_principal]" in cmd
+    assert "[mix_vivo]" in cmd
+    assert cmd[-1] == "pipe:1"
+
+
+def test_record_command_live_pcm_two_sources_without_live_pcm_has_no_map():
+    cmd = audio.record_command("/out/a.flac", monitor="mon", mic="mic", live_pcm=False)
+    assert "-map" not in cmd
+    assert "asplit" not in " ".join(cmd)
+
+
 def test_record_command_unknown_format_falls_back_to_flac():
     cmd = audio.record_command("/out/a.xyz", monitor="mon", audio_format="xyz")
     assert cmd[cmd.index("-c:a") + 1] == "flac"

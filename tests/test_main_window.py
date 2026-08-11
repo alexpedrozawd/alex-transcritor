@@ -32,6 +32,7 @@ def _safe_close(w: MainWindow) -> None:
     # QMessageBox que trava no modo offscreen.
     w.recording_process = None
     w.whisper_thread = None
+    w.live_transcriber = None
 
 
 @pytest.fixture
@@ -56,6 +57,14 @@ def popen(monkeypatch):
 def no_thread(monkeypatch):
     fake = MagicMock()
     monkeypatch.setattr("alex_transcritor.ui.main_window.WhisperThread", fake)
+    return fake
+
+
+@pytest.fixture
+def live_thread(monkeypatch):
+    """Substitui o LiveTranscriber por um duplo — não roda modelo nenhum de verdade."""
+    fake = MagicMock()
+    monkeypatch.setattr("alex_transcritor.ui.main_window.LiveTranscriber", fake)
     return fake
 
 
@@ -230,6 +239,39 @@ def test_start_recording_success(window, popen, tmp_path):
     assert not window.btn_record.isEnabled()
     assert window.btn_stop.isEnabled()
     assert "Gravando" in window.lbl_status.text()
+
+
+def test_start_recording_live_transcription_disabled_by_default(window, popen, live_thread, tmp_path):
+    window.input_dir.setText(str(tmp_path))
+    window._start_recording()
+    live_thread.assert_not_called()
+    assert window.live_panel.isHidden()
+
+
+def test_start_recording_live_transcription_enabled_starts_engine(
+    window, popen, live_thread, tmp_path
+):
+    cfg.update_config(live_transcription=True)
+    window.input_dir.setText(str(tmp_path))
+    window._start_recording()
+    live_thread.assert_called_once()
+    live_thread.return_value.start.assert_called_once()
+    assert not window.live_panel.isHidden()
+
+
+def test_start_recording_live_transcriber_failure_does_not_block_recording(
+    window, popen, monkeypatch, tmp_path
+):
+    """Uma falha ao iniciar a transcrição ao vivo nunca pode impedir a gravação principal."""
+    monkeypatch.setattr(
+        "alex_transcritor.ui.main_window.LiveTranscriber",
+        MagicMock(side_effect=RuntimeError("faster-whisper ausente")),
+    )
+    cfg.update_config(live_transcription=True)
+    window.input_dir.setText(str(tmp_path))
+    window._start_recording()
+    assert window.recording_process is popen
+    assert window.live_transcriber is None
 
 
 def test_start_recording_uses_configured_audio_format(window, popen, tmp_path):

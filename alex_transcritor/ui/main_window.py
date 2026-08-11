@@ -23,8 +23,10 @@ from ..config import (
 )
 from ..worker import WhisperThread
 from ..remote import RemoteWhisperThread
+from ..live import LiveTranscriber
 from .styles import STYLE
 from .settings_dialog import SettingsDialog
+from .live_panel import LivePanel
 
 #: Deixa margem para o sufixo "-2" e para a extensão dentro do limite de 255
 #: bytes por componente de caminho da maioria dos sistemas de arquivos Linux.
@@ -47,6 +49,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.recording_process: subprocess.Popen | None = None
         self.whisper_thread: WhisperThread | RemoteWhisperThread | None = None
+        self.live_transcriber: LiveTranscriber | None = None
         self.audio_path = ""
         self.txt_path = ""
         self.log_path = ""
@@ -84,6 +87,8 @@ class MainWindow(QMainWindow):
         root.addSpacing(14)
         root.addWidget(self._make_status_label())
         root.addSpacing(6)
+        root.addWidget(self._make_live_panel())
+        root.addSpacing(10)
         root.addWidget(self._make_progress_bar())
         root.addSpacing(10)
         root.addWidget(self._make_file_buttons())
@@ -172,6 +177,11 @@ class MainWindow(QMainWindow):
         self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_status.setWordWrap(True)
         return self.lbl_status
+
+    def _make_live_panel(self) -> LivePanel:
+        self.live_panel = LivePanel()
+        self.live_panel.hide()
+        return self.live_panel
 
     def _make_progress_bar(self) -> QProgressBar:
         self.progress = QProgressBar()
@@ -272,6 +282,9 @@ class MainWindow(QMainWindow):
             process.wait()
         except OSError:
             pass
+        # O ffmpeg fechado libera o stdout que o LiveTranscriber lê — parar
+        # depois dele garante que a leitura bloqueada desemperra por EOF.
+        self._stop_live_transcriber()
 
     def _stop_whisper(self) -> None:
         """Cancela a transcrição e o processo filho, sem deixar Whisper órfão."""
@@ -358,10 +371,13 @@ class MainWindow(QMainWindow):
             return
         self._ffmpeg_log = log.name
 
+        live_enabled = bool(config["live_transcription"])
         try:
             self.recording_process = subprocess.Popen(
-                record_command(self.audio_path, monitor, mic, config["audio_format"]),
-                stdout=subprocess.DEVNULL,
+                record_command(
+                    self.audio_path, monitor, mic, config["audio_format"], live_pcm=live_enabled,
+                ),
+                stdout=subprocess.PIPE if live_enabled else subprocess.DEVNULL,
                 stderr=log,
                 stdin=subprocess.DEVNULL,
             )
@@ -386,9 +402,41 @@ class MainWindow(QMainWindow):
         self.btn_stop.setText("⏹  Parar")
         self.progress.hide()
         self._set_status("🔴  Gravando...", "#e74c3c")
+        if live_enabled:
+            self._start_live_transcriber(config)
         # O ffmpeg só falha alguns instantes após iniciar; sem esta verificação a
         # interface anuncia "gravando" enquanto nada é capturado.
         QTimer.singleShot(FFMPEG_CHECK_MS, self._verify_recording_started)
+
+    def _start_live_transcriber(self, config: dict) -> None:
+        """Best-effort: qualquer falha aqui só avisa no painel, nunca a gravação principal."""
+        self.live_panel.clear()
+        self.live_panel.show()
+        try:
+            process = self.recording_process
+            if process is None or process.stdout is None:
+                raise RuntimeError("saída de áudio ao vivo indisponível")
+            self.live_transcriber = LiveTranscriber(
+                process.stdout,
+                model_size=config["live_model"],
+                device=config["live_device"],
+                language=config["language"],
+            )
+            self.live_transcriber.segment.connect(self.live_panel.append_segment)
+            self.live_transcriber.failed.connect(self.live_panel.show_unavailable)
+            self.live_transcriber.start()
+        except Exception as exc:
+            self.live_transcriber = None
+            self.live_panel.show_unavailable(str(exc))
+
+    def _stop_live_transcriber(self) -> None:
+        transcriber = self.live_transcriber
+        self.live_transcriber = None
+        if transcriber is None:
+            return
+        transcriber.stop()
+        if transcriber.isRunning():
+            transcriber.wait(5000)
 
     def _verify_recording_started(self) -> None:
         process = self.recording_process
@@ -397,6 +445,8 @@ class MainWindow(QMainWindow):
         detail = self._read_ffmpeg_log()
         self._cleanup_ffmpeg_log()
         self.recording_process = None
+        self._stop_live_transcriber()
+        self.live_panel.hide()
         self._timer.stop()
         self.btn_record.setEnabled(True)
         self.btn_stop.setEnabled(False)
@@ -436,6 +486,7 @@ class MainWindow(QMainWindow):
 
     def _stop_recording(self) -> None:
         self._stop_ffmpeg()
+        self.live_panel.hide()
         self._cleanup_ffmpeg_log()
         # Deriva do arquivo gravado, não do campo: se o usuário mudar o diretório
         # durante a gravação, o texto tem que acompanhar o áudio.

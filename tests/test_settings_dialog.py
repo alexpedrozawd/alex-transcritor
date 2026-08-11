@@ -81,6 +81,18 @@ def test_defaults_are_preselected(dialog):
     assert dlg.check_enhance.isChecked()
 
 
+def test_live_transcription_fields_preselected(dialog):
+    dlg = dialog(live_transcription=True, live_model="tiny")
+    assert dlg.check_live.isChecked()
+    assert dlg.combo_live_model.currentData() == "tiny"
+
+
+def test_live_transcription_defaults_off(dialog):
+    dlg = dialog()
+    assert not dlg.check_live.isChecked()
+    assert dlg.combo_live_model.currentData() == cfg.DEFAULTS["live_model"]
+
+
 def test_vocabulary_and_replacements_loaded(dialog):
     dlg = dialog(vocabulary="PipeWire", replacements="a => b")
     assert dlg.edit_vocabulary.toPlainText() == "PipeWire"
@@ -135,6 +147,8 @@ def test_save_writes_every_field(dialog):
     dlg.check_enhance.setChecked(False)
     dlg.edit_vocabulary.setPlainText("Kubernetes")
     dlg.edit_replacements.setPlainText("errado => certo")
+    dlg.check_live.setChecked(True)
+    dlg.combo_live_model.setCurrentIndex(dlg.combo_live_model.findData("base"))
     dlg._save()
 
     saved = cfg.load_config()
@@ -151,6 +165,8 @@ def test_save_writes_every_field(dialog):
     assert saved["transcription_backend"] == "remote"
     assert saved["remote_url"] == "http://100.84.64.122:8300"
     assert saved["remote_token"] == "x" * 32
+    assert saved["live_transcription"] is True
+    assert saved["live_model"] == "base"
 
 
 def test_save_does_not_store_placeholder_as_device(qtbot, sources):

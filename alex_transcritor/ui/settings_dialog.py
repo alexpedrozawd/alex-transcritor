@@ -169,6 +169,20 @@ class SettingsDialog(QDialog):
         form.addRow(QLabel("IDIOMA"), self.combo_language)
         form.addRow(QLabel("PROCESSAMENTO"), self.combo_device)
         form.addRow(self._hint(self._hardware_hint()))
+
+        self.check_live = QCheckBox("Mostrar transcrição em tempo real durante a gravação")
+        self.check_live.setChecked(self.config["live_transcription"])
+        self.combo_live_model = _combo(
+            [(m, MODEL_LABELS[m]) for m in WHISPER_MODELS], self.config["live_model"]
+        )
+        form.addRow(QLabel(""), self.check_live)
+        form.addRow(QLabel("MODELO AO VIVO"), self.combo_live_model)
+        form.addRow(self._hint(
+            "Experimental, roda em blocos de alguns segundos (não é legenda "
+            "instantânea) e sempre em CPU, para não disputar VRAM com o passe "
+            "final. Exige o pacote opcional faster-whisper instalado."
+        ))
+
         self._sync_backend_fields()
         return page
 
@@ -251,6 +265,8 @@ class SettingsDialog(QDialog):
             remote_token=self.input_remote_token.text().strip(),
             vocabulary=self.edit_vocabulary.toPlainText().strip(),
             replacements=self.edit_replacements.toPlainText().strip(),
+            live_transcription=self.check_live.isChecked(),
+            live_model=self.combo_live_model.currentData(),
         )
         save_config(self.config)
         self.accept()

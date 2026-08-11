@@ -42,11 +42,17 @@ def record_command(
     monitor: str = "",
     mic: str = "",
     audio_format: str = DEFAULT_AUDIO_FORMAT,
+    live_pcm: bool = False,
 ) -> list[str]:
     """Comando ffmpeg para gravar as fontes indicadas em ``output_path``.
 
     Informar ``monitor`` e ``mic`` juntos mistura as duas fontes — o caso de uma
     reunião em que se quer tanto o interlocutor quanto a própria voz.
+
+    ``live_pcm=True`` acrescenta uma segunda saída, PCM bruto em ``pipe:1``,
+    para um consumidor de transcrição ao vivo — sem alterar a saída principal.
+    Com duas fontes, o mix (``amix``) só pode ser consumido uma vez por saída;
+    por isso ``asplit`` duplica o stream quando as duas saídas coexistem.
     """
     inputs = [device for device in (monitor, mic) if device]
     if not inputs:
@@ -56,15 +62,24 @@ def record_command(
     for device in inputs:
         cmd += ["-f", "pulse", "-i", device]
 
-    if len(inputs) > 1:
-        cmd += [
-            "-filter_complex",
-            f"amix=inputs={len(inputs)}:duration=longest:normalize=0,aresample=async=1",
-        ]
+    multi = len(inputs) > 1
+    if multi:
+        mix = f"amix=inputs={len(inputs)}:duration=longest:normalize=0,aresample=async=1"
+        if live_pcm:
+            cmd += ["-filter_complex", f"{mix},asplit=2[mix_principal][mix_vivo]"]
+            cmd += ["-map", "[mix_principal]"]
+        else:
+            cmd += ["-filter_complex", mix]
 
     cmd += ["-ac", "1", "-ar", SAMPLE_RATE]
     cmd += AUDIO_FORMATS.get(audio_format, AUDIO_FORMATS[DEFAULT_AUDIO_FORMAT])
     cmd.append(output_path)
+
+    if live_pcm:
+        if multi:
+            cmd += ["-map", "[mix_vivo]"]
+        cmd += ["-f", "s16le", "-ar", SAMPLE_RATE, "-ac", "1", "pipe:1"]
+
     return cmd
 
 

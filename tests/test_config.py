@@ -71,6 +71,17 @@ def test_load_config_drops_unknown_keys(tmp_path):
     assert "comando_malicioso" not in cfg.load_config()
 
 
+def test_load_config_rejects_unknown_live_enum_values(tmp_path):
+    (tmp_path / "config.json").write_text('{"live_model": "gpt-9", "live_device": "tpu"}')
+    config = cfg.load_config()
+    assert config["live_model"] == cfg.DEFAULTS["live_model"]
+    assert config["live_device"] == cfg.DEFAULTS["live_device"]
+
+
+def test_load_config_live_transcription_defaults_off():
+    assert cfg.load_config()["live_transcription"] is False
+
+
 # ── save_config ───────────────────────────────────────────────────────────────
 
 def test_save_config_creates_file(tmp_path):

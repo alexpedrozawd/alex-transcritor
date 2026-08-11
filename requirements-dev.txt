@@ -2,6 +2,7 @@
 -r requirements.txt
 -r requirements-local.txt
 -r requirements-server.txt
+-r requirements-live.txt
 pytest>=8.0.0
 pytest-qt>=4.4.0
 pytest-mock>=3.14.0

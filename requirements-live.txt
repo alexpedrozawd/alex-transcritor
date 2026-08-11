@@ -1,0 +1,9 @@
+# Engine opcional para transcrição ao vivo (painel durante a gravação).
+# Independente do openai-whisper usado no passe final — motor mais leve
+# (CTranslate2), pensado para baixa latência em janelas curtas de CPU.
+#
+# 1.2.1 (não 1.0.3) porque depende de av>=11 sem teto; versões antigas do
+# faster-whisper fixam av<13, e não há wheel pré-compilada de av<13 para
+# Python 3.14 — só existe a partir do av 15, o que obrigaria compilar do
+# zero (exige libavformat-dev etc., ausentes neste sistema).
+faster-whisper==1.2.1

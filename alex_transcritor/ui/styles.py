@@ -113,6 +113,14 @@ QProgressBar {
 }
 QProgressBar::chunk { background-color: #f39c12; border-radius: 3px; }
 QLabel#label_version { font-size: 9px; color: #6a6a6a; padding: 0; margin: 0; }
+QTextEdit#livePanel {
+    background-color: #161616;
+    border: 1px solid #2a2a2a;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+    color: #d0d0d0;
+}
 """
 
 DIALOG_STYLE = _BASE + """

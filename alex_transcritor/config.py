@@ -36,6 +36,9 @@ DEFAULTS: dict = {
     "transcription_backend": "local",
     "remote_url": "http://100.84.64.122:8300",
     REMOTE_TOKEN_KEY: "",
+    "live_transcription": False,  # opt-in — exige faster-whisper instalado
+    "live_model": "small",        # menor que o padrão do passe final, para latência baixa
+    "live_device": "cpu",         # evita contenção de VRAM com o passe final na GPU
 }
 
 
@@ -72,6 +75,8 @@ def _coerce_enums(config: dict) -> dict:
         ("audio_format", tuple(AUDIO_FORMATS)),
         ("model", WHISPER_MODELS),
         ("transcription_backend", TRANSCRIPTION_BACKENDS),
+        ("live_model", WHISPER_MODELS),
+        ("live_device", DEVICES),
     ):
         if config[key] not in allowed:
             config[key] = DEFAULTS[key]

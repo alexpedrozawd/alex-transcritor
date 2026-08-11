@@ -150,6 +150,15 @@ if [[ "$INSTALL_LOCAL" =~ ^[Ss]$ ]]; then
     ok "Whisper local instalado"
 fi
 
+echo ""
+ask "Instalar a transcrição ao vivo (experimental, mostra o texto durante a gravação)? [s/N]: "
+read -r INSTALL_LIVE
+if [[ "$INSTALL_LIVE" =~ ^[Ss]$ ]]; then
+    step "Instalando faster-whisper para transcrição ao vivo..."
+    "$PIP" install -r "$SCRIPT_DIR/requirements-live.txt" -q
+    ok "Transcrição ao vivo instalada — ative em ⚙ Configurações → Transcrição"
+fi
+
 # ─── 7. Verificar aceleração por GPU ─────────────────────────────────────────
 # O torch publicado no PyPI já vem com as bibliotecas CUDA. Reinstalá-lo a partir
 # dos índices cu118/cu121 quebrava a instalação: esses índices não têm wheels
