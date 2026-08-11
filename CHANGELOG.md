@@ -2,6 +2,29 @@
 
 Registro das alterações aplicadas durante as auditorias de qualidade, testes e segurança.
 
+## [4.0.0] — 2026-08-10
+
+### Transcrição remota privada
+
+- Cliente desktop pode alternar entre Whisper local e servidor via Tailscale.
+- API FastAPI assíncrona com upload limitado, token obrigatório, restrição por IP,
+  progresso, cancelamento e resultado em texto.
+- Serviço vinculado somente a `100.84.64.122:8300`, aceitando o Nitro 5 em
+  `100.88.218.16`; nunca escuta em `0.0.0.0`.
+- Fila de uma transcrição por vez e espera por pelo menos 7 GiB livres de VRAM.
+- Ambiente Conda próprio com PyTorch ROCm para a RX 9070 XT (`gfx1201`), sem alterar
+  ambientes do `ap-ai-studio`.
+- Arquivos recebidos ficam em diretório temporário `0700`, com conteúdo `0600`, e são
+  removidos após o processamento. Token e configuração permanecem fora do Git.
+- Serviço `systemd --user` com limites de memória e hardening; modelo é descarregado
+  ao fim de cada trabalho para liberar a GPU compartilhada.
+
+### Testes
+
+- Testes da API cobrem autenticação, restrição de origem, validação de upload e fluxo
+  completo com Whisper falso.
+- Testes do cliente remoto cobrem polling, publicação, correções e cancelamento.
+
 ---
 
 ## [3.0.0] — 2026-08-08

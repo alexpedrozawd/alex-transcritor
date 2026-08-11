@@ -112,6 +112,13 @@ def test_changing_mode_updates_fields(dialog):
     assert not dlg.combo_monitor.isEnabled() and dlg.combo_mic.isEnabled()
 
 
+def test_remote_backend_enables_server_fields(dialog):
+    dlg = dialog(transcription_backend="remote")
+    assert dlg.input_remote_url.isEnabled()
+    assert dlg.input_remote_token.isEnabled()
+    assert not dlg.combo_device.isEnabled()
+
+
 # ── Salvar ────────────────────────────────────────────────────────────────────
 
 def test_save_writes_every_field(dialog):
@@ -122,6 +129,9 @@ def test_save_writes_every_field(dialog):
     dlg.combo_language.setCurrentIndex(dlg.combo_language.findData("en"))
     dlg.combo_device.setCurrentIndex(dlg.combo_device.findData("cpu"))
     dlg.combo_format.setCurrentIndex(dlg.combo_format.findData("mp3"))
+    dlg.combo_backend.setCurrentIndex(dlg.combo_backend.findData("remote"))
+    dlg.input_remote_url.setText("http://100.84.64.122:8300/")
+    dlg.input_remote_token.setText("x" * 32)
     dlg.check_enhance.setChecked(False)
     dlg.edit_vocabulary.setPlainText("Kubernetes")
     dlg.edit_replacements.setPlainText("errado => certo")
@@ -138,6 +148,9 @@ def test_save_writes_every_field(dialog):
     assert saved["enhance_audio"] is False
     assert saved["vocabulary"] == "Kubernetes"
     assert saved["replacements"] == "errado => certo"
+    assert saved["transcription_backend"] == "remote"
+    assert saved["remote_url"] == "http://100.84.64.122:8300"
+    assert saved["remote_token"] == "x" * 32
 
 
 def test_save_does_not_store_placeholder_as_device(qtbot, sources):

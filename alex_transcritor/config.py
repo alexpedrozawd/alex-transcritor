@@ -13,6 +13,8 @@ DEFAULT_OUTPUT_DIR: str = str(Path.home() / "transcricoes")
 
 SOURCE_MODES: tuple[str, ...] = ("system", "mic", "both")
 DEVICES: tuple[str, ...] = ("auto", "cuda", "cpu")
+TRANSCRIPTION_BACKENDS: tuple[str, ...] = ("local", "remote")
+REMOTE_TOKEN_KEY = "remote_" + "token"
 
 #: Valor padrão de cada chave. Também define o tipo esperado: um valor lido do
 #: disco com tipo divergente é descartado em favor do padrão.
@@ -31,6 +33,9 @@ DEFAULTS: dict = {
     "vocabulary": "",
     "replacements": "",
     "device": "auto",
+    "transcription_backend": "local",
+    "remote_url": "http://100.84.64.122:8300",
+    REMOTE_TOKEN_KEY: "",
 }
 
 
@@ -66,6 +71,7 @@ def _coerce_enums(config: dict) -> dict:
         ("device", DEVICES),
         ("audio_format", tuple(AUDIO_FORMATS)),
         ("model", WHISPER_MODELS),
+        ("transcription_backend", TRANSCRIPTION_BACKENDS),
     ):
         if config[key] not in allowed:
             config[key] = DEFAULTS[key]

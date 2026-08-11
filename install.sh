@@ -137,17 +137,27 @@ step "Atualizando pip..."
 ok "pip atualizado"
 
 # ─── 6. Instalar dependências Python ─────────────────────────────────────────
-step "Instalando dependências Python (PyQt6 + OpenAI Whisper)..."
+step "Instalando dependências do aplicativo..."
 "$PIP" install -r "$SCRIPT_DIR/requirements.txt" -q
 ok "Dependências instaladas"
+
+echo ""
+ask "Instalar também a transcrição local? No modo servidor ela não é necessária. [s/N]: "
+read -r INSTALL_LOCAL
+if [[ "$INSTALL_LOCAL" =~ ^[Ss]$ ]]; then
+    step "Instalando OpenAI Whisper para transcrição local..."
+    "$PIP" install -r "$SCRIPT_DIR/requirements-local.txt" -q
+    ok "Whisper local instalado"
+fi
 
 # ─── 7. Verificar aceleração por GPU ─────────────────────────────────────────
 # O torch publicado no PyPI já vem com as bibliotecas CUDA. Reinstalá-lo a partir
 # dos índices cu118/cu121 quebrava a instalação: esses índices não têm wheels
 # para Python 3.13+ e, com 'set -e', o instalador abortava antes de criar o
 # launcher. Aqui só verificamos o que de fato ficou disponível.
-step "Verificando aceleração por GPU..."
-GPU_INFO=$("$PYTHON" - <<'PY' 2>/dev/null || true
+if [[ "$INSTALL_LOCAL" =~ ^[Ss]$ ]]; then
+    step "Verificando aceleração por GPU..."
+    GPU_INFO=$("$PYTHON" - <<'PY' 2>/dev/null || true
 try:
     import torch
     if torch.cuda.is_available():
@@ -157,12 +167,13 @@ try:
 except Exception:
     pass
 PY
-)
-if [[ -n "$GPU_INFO" ]]; then
-    ok "GPU disponível: $GPU_INFO"
-    echo -e "    Modelos que não couberem na VRAM rodam em CPU automaticamente."
-else
-    warn "Sem GPU utilizável — a transcrição roda em CPU (mais lenta, mesma precisão)"
+    )
+    if [[ -n "$GPU_INFO" ]]; then
+        ok "GPU disponível: $GPU_INFO"
+        echo -e "    Modelos que não couberem na VRAM rodam em CPU automaticamente."
+    else
+        warn "Sem GPU utilizável — a transcrição local roda em CPU"
+    fi
 fi
 
 # ─── 8. Remover __pycache__ copiado do source ────────────────────────────────
@@ -195,9 +206,7 @@ fi
 echo ""
 DEFAULT_MODEL="turbo"
 WHISPER_MODEL_FILE="$HOME/.cache/whisper/large-v3-turbo.pt"
-if [[ -f "$WHISPER_MODEL_FILE" ]]; then
-    ok "Modelo Whisper '$DEFAULT_MODEL' já está baixado"
-else
+if [[ "$INSTALL_LOCAL" =~ ^[Ss]$ ]] && [[ ! -f "$WHISPER_MODEL_FILE" ]]; then
     ask "Baixar o modelo Whisper '$DEFAULT_MODEL' agora? (~1,5 GB, necessário na 1ª transcrição) [s/N]: "
     read -r DOWNLOAD_MODEL
     if [[ "$DOWNLOAD_MODEL" =~ ^[Ss]$ ]]; then
@@ -210,6 +219,8 @@ else
     else
         warn "Modelo não baixado — será baixado automaticamente na primeira transcrição"
     fi
+elif [[ "$INSTALL_LOCAL" =~ ^[Ss]$ ]]; then
+    ok "Modelo Whisper '$DEFAULT_MODEL' já está baixado"
 fi
 
 # ─── 12. Detectar dispositivo de áudio ───────────────────────────────────────

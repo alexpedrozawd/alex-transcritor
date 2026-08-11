@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
 from .constants import SOCKET_NAME, WHISPER_BIN
+from .config import load_config
 from .ui.main_window import MainWindow
 
 
@@ -14,7 +15,7 @@ def _check_dependencies() -> list[str]:
     for cmd in ("ffmpeg", "ffprobe", "pactl"):
         if not shutil.which(cmd):
             missing.append(cmd)
-    if not Path(WHISPER_BIN).exists():
+    if load_config()["transcription_backend"] == "local" and not Path(WHISPER_BIN).exists():
         missing.append("whisper (ambiente virtual)")
     return missing
 

@@ -32,9 +32,17 @@ def test_reports_missing_system_commands(monkeypatch, tmp_path):
 
 
 def test_reports_missing_whisper(monkeypatch):
+    monkeypatch.setattr(app_module, "load_config", lambda: {"transcription_backend": "local"})
     monkeypatch.setattr(app_module, "WHISPER_BIN", "/nao/existe/whisper")
     monkeypatch.setattr(app_module.shutil, "which", lambda cmd: "/usr/bin/" + cmd)
     assert any("whisper" in m for m in app_module._check_dependencies())
+
+
+def test_remote_mode_does_not_require_local_whisper(monkeypatch):
+    monkeypatch.setattr(app_module, "load_config", lambda: {"transcription_backend": "remote"})
+    monkeypatch.setattr(app_module, "WHISPER_BIN", "/nao/existe/whisper")
+    monkeypatch.setattr(app_module.shutil, "which", lambda cmd: "/usr/bin/" + cmd)
+    assert app_module._check_dependencies() == []
 
 
 def test_ffprobe_is_checked(monkeypatch, tmp_path):

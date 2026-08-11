@@ -9,6 +9,7 @@ A lightweight Linux desktop app for **automatic audio recording and transcriptio
 - Captures system audio, microphone, or **both mixed together** (PulseAudio/PipeWire via FFmpeg)
 - Records **lossless FLAC** at 16 kHz mono — the exact format Whisper consumes
 - Transcribes locally, picking GPU or CPU automatically based on available VRAM
+- Or sends the recording through a private Tailscale connection to a ROCm GPU server
 - Accepts a **custom vocabulary** so proper nouns and jargon come out right
 - Applies user-defined find/replace corrections to the final text
 - Shows live progress and never overwrites an existing recording
@@ -33,9 +34,13 @@ Quiet recordings benefit further from the built-in adaptive gain: on a sample pe
 | Python | 3.10+ |
 | FFmpeg + ffprobe | any modern version |
 | PulseAudio or PipeWire | with `pactl` available |
-| Disk space | ~4 GB (venv + Whisper model) |
+| Disk space | ~500 MB remote-only; ~4 GB with local Whisper |
 
 An NVIDIA GPU is optional. Models that do not fit in VRAM run on CPU automatically — slower, same accuracy.
+
+Remote transcription is optional. The desktop keeps recording locally while a private,
+authenticated API performs Whisper inference on another machine. The production setup
+binds only to the server's Tailscale address and accepts only the configured client IP.
 
 ## Installation
 
@@ -45,7 +50,8 @@ cd alex-transcritor
 bash install.sh
 ```
 
-The installer handles system dependencies, the Python virtual environment, the Whisper model download, desktop menu integration, and a final smoke test.
+The installer handles system dependencies, the Python environment, optional local
+Whisper support, desktop integration, and a final smoke test.
 
 See the [User Manual](docs/MANUAL_USUARIO.md) (Portuguese) for step-by-step instructions.
 
@@ -68,13 +74,17 @@ alex-transcritor/
 │   ├── constants.py       ← paths, formats, model metadata
 │   ├── hardware.py        ← GPU detection and device selection
 │   ├── worker.py          ← transcription thread (progress, CPU fallback, cancel)
+│   ├── remote.py          ← authenticated remote client (upload, progress, cancel)
+│   ├── server.py          ← private asynchronous transcription API
 │   └── ui/                ← main window, settings dialog, styles
-├── tests/                 ← test suite (201 tests, 99% coverage)
+├── tests/                 ← test suite (214 tests)
 ├── assets/                ← application icon
 ├── scripts/               ← utilities (icon generation)
 ├── docs/                  ← user and developer manuals
 ├── main.py                ← thin entry point
 ├── install.sh             ← installer
+├── install-server.sh      ← isolated server service installer
+├── uninstall-server.sh    ← removes the service and token, preserving models
 └── uninstall.sh           ← uninstaller
 ```
 
@@ -95,9 +105,18 @@ bash uninstall.sh
 
 Removes the app, launcher, menu entry and configuration. Whisper models in `~/.cache/whisper` and your recordings are left untouched.
 
+## Private GPU server
+
+The deployed server listens at `http://100.84.64.122:8300` only, accepts the Nitro 5
+at `100.88.218.16`, requires a random bearer token, queues one GPU job at a time and
+unloads Whisper after each job. See the developer manual for deployment and rollback.
+
 ## Privacy
 
-Audio never leaves the machine. The model is downloaded once and every transcription runs locally. Configuration and error logs are written with owner-only permissions.
+In local mode, audio never leaves the computer. In remote mode, it travels only through
+the encrypted Tailscale connection to the configured private server, is deleted there
+after processing, and is never sent to a cloud transcription API. Configuration and
+error logs are written with owner-only permissions.
 
 ## License
 

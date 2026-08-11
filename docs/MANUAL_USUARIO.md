@@ -18,10 +18,14 @@ Serve para aulas, reuniões, entrevistas, podcasts — qualquer áudio que você
 - **Python 3.10 ou superior** — confira com `python3 --version`
 - **ffmpeg** e **ffprobe** (o instalador tenta instalar)
 - **PulseAudio ou PipeWire** (com o comando `pactl`)
-- **~4 GB de espaço livre** (ambiente Python + modelo de IA)
+- **~500 MB no modo servidor**, ou ~4 GB com Whisper local
 - Conexão com a internet apenas na instalação
 
 Placa de vídeo NVIDIA é opcional. Sem GPU — ou quando o modelo escolhido não cabe na memória da placa — a transcrição roda na CPU: mais lenta, com a mesma precisão.
+
+Também é possível usar um servidor privado conectado por Tailscale. Nesse modo, o
+notebook continua responsável pela gravação, mas o processamento pesado acontece na GPU
+do servidor e o texto volta automaticamente para o diretório escolhido.
 
 ---
 
@@ -33,9 +37,12 @@ Dentro da pasta do projeto:
 bash install.sh
 ```
 
-O instalador cuida de tudo: dependências do sistema, ambiente Python isolado, download do modelo, ícone no menu de aplicativos e uma verificação final para garantir que o app realmente sobe.
+O instalador cuida das dependências do sistema, ambiente Python isolado, ícone no menu
+e verificação final. Quando perguntar sobre transcrição local, responda **n** se este
+notebook usará exclusivamente o servidor.
 
-Quando ele perguntar se deve baixar o modelo `turbo` (~1,5 GB), responda **s**. Se você deixar para depois, o download acontece sozinho na primeira transcrição — mas aí a primeira gravação demora bem mais.
+O download local do modelo `turbo` (~1,5 GB) só é oferecido quando a engine local é
+instalada. No modo servidor, o modelo fica no servidor e não ocupa o notebook.
 
 Ao final:
 
@@ -50,6 +57,15 @@ Ao final:
 ## Primeiro uso
 
 Abra o app pelo menu de aplicativos (**Alex Transcritor**) ou digitando `alex-transcritor` no terminal.
+
+Para configurar o Nitro 5 para o servidor, execute uma vez dentro do repositório:
+
+```bash
+python3 configure-remote-client.py
+```
+
+Informe o token apenas no prompt oculto. Não coloque o token na linha de comando nem em
+arquivo versionado.
 
 **Antes da primeira gravação, clique no botão ⚙ no canto superior direito.** Vale conferir três coisas:
 
@@ -70,6 +86,9 @@ Abra o app pelo menu de aplicativos (**Alex Transcritor**) ou digitando `alex-tr
 | **Modelo** | `turbo` é o padrão e o mais preciso na prática. `small` é bem mais rápido e menos preciso — troque se a espera incomodar mais que os erros. |
 | **Idioma** | `Português`, ou `Detectar automaticamente` se você grava em vários idiomas. |
 | **Processamento** | Deixe em `Automático`: o app usa a GPU quando o modelo cabe nela e cai para a CPU quando não cabe. |
+| **Onde transcrever** | Escolha `Servidor privado via Tailscale` para usar a RX 9070 XT. |
+| **Servidor** | No ambiente configurado: `http://100.84.64.122:8300`. |
+| **Token** | Cole o token privado fornecido pelo administrador. Ele é armazenado no config `0600`. |
 
 ### Aba Vocabulário — a que mais reduz erro
 
@@ -114,6 +133,9 @@ Depende do modelo e de onde ele roda. Medido num Intel i5-10300H com GTX 1650:
 
 Você pode continuar usando o computador enquanto a transcrição roda.
 
+No modo remoto, mantenha o Tailscale conectado até o texto aparecer. Se a conexão cair,
+o áudio original continua salvo no notebook; uma nova tentativa pode ser feita depois.
+
 ---
 
 ## Quando algo dá errado
@@ -154,4 +176,7 @@ Remove o aplicativo, o launcher, o ícone do menu e as configurações. Os model
 
 ## Privacidade
 
-O áudio nunca sai da sua máquina. O modelo é baixado uma vez e toda a transcrição acontece localmente. O arquivo de configuração e o log de erro são gravados com permissão restrita ao seu usuário.
+No modo local, o áudio nunca sai do notebook. No modo servidor, ele trafega somente pelo
+túnel criptografado do Tailscale até o servidor privado e é apagado do servidor após o
+processamento; nenhum áudio é enviado para uma API de nuvem. O arquivo de configuração e
+o log de erro são gravados com permissão restrita ao seu usuário.

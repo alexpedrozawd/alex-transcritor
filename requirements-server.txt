@@ -1,0 +1,5 @@
+# API privada de transcrição. O PyTorch ROCm é instalado separadamente no servidor.
+openai-whisper==20250625
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+python-multipart==0.0.32

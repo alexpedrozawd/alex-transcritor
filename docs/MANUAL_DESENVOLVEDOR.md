@@ -1,6 +1,6 @@
 # Manual do Desenvolvedor — Alex Transcritor
 
-Documentação técnica do código na versão 3.0.0.
+Documentação técnica do código na versão 4.0.0.
 
 ---
 
@@ -17,6 +17,7 @@ Documentação técnica do código na versão 3.0.0.
 9. [Segurança](#segurança)
 10. [Testes](#testes)
 11. [Como estender](#como-estender)
+12. [Servidor remoto](#servidor-remoto)
 
 ---
 
@@ -32,11 +33,13 @@ alex-transcritor/
 │   ├── audio.py                  ← comandos ffmpeg e medição de nível
 │   ├── hardware.py               ← detecção de GPU e escolha cuda/cpu
 │   ├── worker.py                 ← WhisperThread (QThread)
+│   ├── remote.py                 ← RemoteWhisperThread (cliente HTTP)
+│   ├── server.py                 ← API privada e fila de GPU
 │   └── ui/
 │       ├── styles.py             ← folhas de estilo (STYLE, DIALOG_STYLE)
 │       ├── settings_dialog.py    ← QDialog com abas Áudio/Transcrição/Vocabulário
 │       └── main_window.py        ← QMainWindow principal
-├── tests/                        ← pytest (201 testes, 99% de cobertura)
+├── tests/                        ← pytest (214 testes)
 ├── assets/icon.png
 ├── scripts/create_icon.py
 ├── requirements.txt
@@ -260,3 +263,38 @@ pytest tests/ --cov --cov-report=term-missing
 **Outro formato de saída (SRT/VTT):** `_run_whisper()` passa `--output_format txt`; aceitar uma lista exige ajustar também o `glob("*.txt")` e o `_publish()`.
 
 **Trocar a engine (faster-whisper):** o ponto de extensão é `WhisperThread._run_whisper()`. A interface de sinais e o restante do fluxo permanecem válidos.
+
+## Servidor remoto
+
+No modo `remote`, `MainWindow` instancia `RemoteWhisperThread`: ele envia o áudio,
+consulta o estado a cada segundo, baixa o texto e aplica localmente as correções do
+usuário. O áudio original nunca é removido do notebook.
+
+O servidor expõe `POST /v1/jobs`, `GET /v1/jobs/{id}`,
+`GET /v1/jobs/{id}/result` e `DELETE /v1/jobs/{id}`. Todos exigem bearer token e o IP
+de origem configurado. Uploads são limitados a 2 GiB e extensões de áudio conhecidas.
+Uma fila com um único worker evita concorrência na GPU; antes de iniciar, ela espera ao
+menos 7 GiB de VRAM livres. Cada transcrição usa um processo Whisper separado, liberando
+VRAM ao terminar.
+
+Instalação no servidor:
+
+```bash
+bash install-server.sh
+systemctl --user status alex-transcritor-server
+```
+
+Configuração do cliente:
+
+```bash
+python3 configure-remote-client.py
+```
+
+O token fica em `~/.config/alex-transcritor/server.env` no servidor, modo `0600`.
+Para reverter sem afetar ROCm ou outros projetos:
+
+```bash
+bash uninstall-server.sh
+```
+
+Remover `.server-env` e o cache do modelo é opcional e deve ser uma decisão separada.

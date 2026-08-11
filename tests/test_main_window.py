@@ -317,6 +317,25 @@ def test_stop_recording_passes_configured_options(window, popen, no_thread, tmp_
     assert kwargs["txt_path"] == window.txt_path
 
 
+def test_stop_recording_uses_remote_server(window, popen, tmp_path, monkeypatch):
+    remote = MagicMock()
+    monkeypatch.setattr("alex_transcritor.ui.main_window.RemoteWhisperThread", remote)
+    cfg.update_config(
+        transcription_backend="remote",
+        remote_url="http://100.84.64.122:8300",
+        remote_token="x" * 32,
+        model="turbo",
+    )
+    window.input_dir.setText(str(tmp_path))
+    window._start_recording()
+    window._stop_clicked()
+    kwargs = remote.call_args.kwargs
+    assert kwargs["remote_url"] == "http://100.84.64.122:8300"
+    assert kwargs["token"] == "x" * 32
+    assert kwargs["model"] == "turbo"
+    remote.return_value.start.assert_called_once()
+
+
 def test_stop_recording_saves_output_dir(window, popen, no_thread, tmp_path):
     window.input_dir.setText(str(tmp_path))
     window._start_recording()

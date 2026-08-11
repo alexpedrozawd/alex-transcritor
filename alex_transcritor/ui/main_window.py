@@ -22,6 +22,7 @@ from ..config import (
     save_last_output_dir, get_initial_prompt, get_replacements,
 )
 from ..worker import WhisperThread
+from ..remote import RemoteWhisperThread
 from .styles import STYLE
 from .settings_dialog import SettingsDialog
 
@@ -45,7 +46,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.recording_process: subprocess.Popen | None = None
-        self.whisper_thread: WhisperThread | None = None
+        self.whisper_thread: WhisperThread | RemoteWhisperThread | None = None
         self.audio_path = ""
         self.txt_path = ""
         self.log_path = ""
@@ -446,17 +447,23 @@ class MainWindow(QMainWindow):
         self._set_status("⏳  Transcrevendo...", "#f39c12")
 
         config = load_config()
-        self.whisper_thread = WhisperThread(
+        common = dict(
             audio_path=self.audio_path,
             txt_path=self.txt_path,
-            whisper_bin=WHISPER_BIN,
             model=config["model"],
             language=config["language"],
-            device=config["device"],
             initial_prompt=get_initial_prompt(),
             enhance=config["enhance_audio"],
             replacements=get_replacements(),
         )
+        if config["transcription_backend"] == "remote":
+            self.whisper_thread = RemoteWhisperThread(
+                remote_url=config["remote_url"], token=config["remote_token"], **common
+            )
+        else:
+            self.whisper_thread = WhisperThread(
+                whisper_bin=WHISPER_BIN, device=config["device"], **common
+            )
         self.whisper_thread.succeeded.connect(self._on_done)
         self.whisper_thread.failed.connect(self._on_error)
         self.whisper_thread.progress.connect(self._on_progress)

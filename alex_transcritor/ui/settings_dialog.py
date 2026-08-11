@@ -1,11 +1,11 @@
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
-    QPushButton, QCheckBox, QPlainTextEdit, QTabWidget, QWidget, QFormLayout,
+    QPushButton, QCheckBox, QPlainTextEdit, QTabWidget, QWidget, QFormLayout, QLineEdit,
 )
 from PyQt6.QtCore import Qt
 
 from ..config import (
-    DEVICES, load_config, save_config,
+    DEVICES, TRANSCRIPTION_BACKENDS, load_config, save_config,
     list_monitor_sources, list_input_sources,
 )
 from ..constants import AUDIO_FORMATS, WHISPER_MODELS
@@ -48,6 +48,11 @@ DEVICE_LABELS: dict[str, str] = {
     "auto": "Automático (GPU se couber na VRAM)",
     "cuda": "Forçar GPU",
     "cpu": "Forçar CPU",
+}
+
+BACKEND_LABELS: dict[str, str] = {
+    "local": "Neste computador",
+    "remote": "Servidor privado via Tailscale",
 }
 
 
@@ -146,11 +151,25 @@ class SettingsDialog(QDialog):
         self.combo_device = _combo(
             [(d, DEVICE_LABELS[d]) for d in DEVICES], self.config["device"]
         )
+        self.combo_backend = _combo(
+            [(b, BACKEND_LABELS[b]) for b in TRANSCRIPTION_BACKENDS],
+            self.config["transcription_backend"],
+        )
+        self.input_remote_url = QLineEdit(self.config["remote_url"])
+        self.input_remote_url.setPlaceholderText("http://100.84.64.122:8300")
+        self.input_remote_token = QLineEdit(self.config["remote_token"])
+        self.input_remote_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self.input_remote_token.setPlaceholderText("Token compartilhado")
+        self.combo_backend.currentIndexChanged.connect(self._sync_backend_fields)
 
+        form.addRow(QLabel("ONDE TRANSCREVER"), self.combo_backend)
+        form.addRow(QLabel("SERVIDOR"), self.input_remote_url)
+        form.addRow(QLabel("TOKEN"), self.input_remote_token)
         form.addRow(QLabel("MODELO"), self.combo_model)
         form.addRow(QLabel("IDIOMA"), self.combo_language)
         form.addRow(QLabel("PROCESSAMENTO"), self.combo_device)
         form.addRow(self._hint(self._hardware_hint()))
+        self._sync_backend_fields()
         return page
 
     def _build_vocabulary_tab(self) -> QWidget:
@@ -206,6 +225,12 @@ class SettingsDialog(QDialog):
         self.combo_monitor.setEnabled(mode in ("system", "both"))
         self.combo_mic.setEnabled(mode in ("mic", "both"))
 
+    def _sync_backend_fields(self) -> None:
+        remote = self.combo_backend.currentData() == "remote"
+        self.input_remote_url.setEnabled(remote)
+        self.input_remote_token.setEnabled(remote)
+        self.combo_device.setEnabled(not remote)
+
     @staticmethod
     def _selected_source(combo: QComboBox) -> str:
         text = combo.currentText()
@@ -221,6 +246,9 @@ class SettingsDialog(QDialog):
             model=self.combo_model.currentData(),
             language=self.combo_language.currentData(),
             device=self.combo_device.currentData(),
+            transcription_backend=self.combo_backend.currentData(),
+            remote_url=self.input_remote_url.text().strip().rstrip("/"),
+            remote_token=self.input_remote_token.text().strip(),
             vocabulary=self.edit_vocabulary.toPlainText().strip(),
             replacements=self.edit_replacements.toPlainText().strip(),
         )
