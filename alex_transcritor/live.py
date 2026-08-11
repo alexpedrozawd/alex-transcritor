@@ -81,7 +81,7 @@ class LiveTranscriber(QThread):
     def __init__(
         self,
         stdout: BinaryIO,
-        model_size: str = "small",
+        model_size: str = "tiny",
         device: str = "cpu",
         language: str = "pt",
     ) -> None:
@@ -150,6 +150,12 @@ class LiveTranscriber(QThread):
             language=self.language,
             vad_filter=True,
             condition_on_previous_text=False,
+            # Busca em feixe (padrão do faster-whisper: beam_size=5) é várias
+            # vezes mais lenta que decodificação gulosa — inviável para uma
+            # janela de poucos segundos em CPU. O passe final continua com
+            # qualidade plena; aqui a prioridade é acompanhar em tempo real.
+            beam_size=1,
+            best_of=1,
         )
         segments = list(segments)
         last_idx = len(segments) - 1

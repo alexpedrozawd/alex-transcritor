@@ -430,13 +430,23 @@ class MainWindow(QMainWindow):
             self.live_panel.show_unavailable(str(exc))
 
     def _stop_live_transcriber(self) -> None:
+        """Sinaliza parada sem bloquear a UI.
+
+        ``wait()`` aqui travaria a thread da interface até a janela de
+        transcrição em andamento terminar — perceptível como um
+        congelamento ao clicar "Parar". A thread termina sozinha (a
+        transcrição atual conclui, o loop vê ``_stopped`` e sai) e
+        ``deleteLater`` só roda quando ela de fato emitir ``finished``.
+        """
         transcriber = self.live_transcriber
         self.live_transcriber = None
         if transcriber is None:
             return
         transcriber.stop()
         if transcriber.isRunning():
-            transcriber.wait(5000)
+            transcriber.finished.connect(transcriber.deleteLater)
+        else:
+            transcriber.deleteLater()
 
     def _verify_recording_started(self) -> None:
         process = self.recording_process

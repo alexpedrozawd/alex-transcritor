@@ -38,7 +38,7 @@ DEFAULTS: dict = {
     REMOTE_TOKEN_KEY: "",
     "diarize_speakers": False,  # opt-in, remoto apenas — exige token HF configurado no servidor
     "live_transcription": False,  # opt-in — exige faster-whisper instalado
-    "live_model": "small",        # menor que o padrão do passe final, para latência baixa
+    "live_model": "tiny",         # o menor: em CPU, "small" nem com beam_size=1 acompanha em tempo real
     "live_device": "cpu",         # evita contenção de VRAM com o passe final na GPU
 }
 

@@ -274,6 +274,26 @@ def test_start_recording_live_transcriber_failure_does_not_block_recording(
     assert window.live_transcriber is None
 
 
+def test_stop_live_transcriber_never_blocks_the_gui_thread(window):
+    """Regressão: wait() aqui trava a UI até a janela em transcrição terminar
+    — reportado como "a interface congela" ao clicar Parar."""
+    transcriber = MagicMock()
+    transcriber.isRunning.return_value = True
+    window.live_transcriber = transcriber
+    window._stop_live_transcriber()
+    transcriber.wait.assert_not_called()
+    transcriber.stop.assert_called_once()
+    transcriber.finished.connect.assert_called_once_with(transcriber.deleteLater)
+
+
+def test_stop_live_transcriber_deletes_immediately_when_already_stopped(window):
+    transcriber = MagicMock()
+    transcriber.isRunning.return_value = False
+    window.live_transcriber = transcriber
+    window._stop_live_transcriber()
+    transcriber.deleteLater.assert_called_once()
+
+
 def test_start_recording_uses_configured_audio_format(window, popen, tmp_path):
     cfg.update_config(audio_format="wav")
     window.input_dir.setText(str(tmp_path))
