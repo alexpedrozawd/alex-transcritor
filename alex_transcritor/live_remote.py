@@ -33,7 +33,14 @@ MAX_QUEUED_CHUNKS = 50
 #: Tempo de espera por dado antes de checar se chegou algo do servidor ou se
 #: é hora de mandar mais áudio — mantém send/recv intercalados na mesma
 #: thread, sem precisar sincronizar acesso concorrente ao socket.
-POLL_TIMEOUT_S = 0.1
+#:
+#: ``websocket.WebSocket.settimeout()`` vale para o socket inteiro, não só
+#: para o ``recv()`` de checagem — testado em uso real: 0.1s derrubava a
+#: conexão sempre que um envio de PCM (``send_bytes``) demorasse mais que
+#: isso, o que é fácil de acontecer em qualquer rede real. Não prejudica a
+#: responsividade de receber segmentos: a fila de blocos pendentes já dirige
+#: o ritmo do loop, esse timeout só importa quando não há nada para mandar.
+POLL_TIMEOUT_S = 2.0
 
 
 class RemoteLiveTranscriber(QThread):

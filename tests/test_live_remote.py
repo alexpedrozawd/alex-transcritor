@@ -80,6 +80,20 @@ def test_connection_failure_emits_failed_without_crashing(qtbot, monkeypatch):
     transcriber.wait(2000)
 
 
+def test_socket_timeout_is_generous_enough_for_real_sends(qtbot, monkeypatch):
+    """Regressão de uso real: settimeout() vale para o socket inteiro, não só
+    para o recv() de checagem — 0.1s derrubava a conexão sempre que um envio
+    de PCM demorasse mais que isso, fácil de acontecer em qualquer rede real."""
+    calls = {}
+    fake_ws = _FakeWS()
+    fake_ws.settimeout = lambda t: calls.__setitem__("timeout", t)
+    monkeypatch.setattr(live_remote.websocket, "create_connection", lambda *a, **k: fake_ws)
+    transcriber = RemoteLiveTranscriber(io.BytesIO(b"\x00" * 100), "http://host:8300", "tok")
+    transcriber.start()
+    assert transcriber.wait(3000)
+    assert calls["timeout"] >= 1.0
+
+
 def test_stop_before_start_returns_quickly(qtbot, monkeypatch):
     fake_ws = _FakeWS()
     monkeypatch.setattr(live_remote.websocket, "create_connection", lambda *a, **k: fake_ws)
