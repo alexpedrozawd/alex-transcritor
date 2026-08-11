@@ -73,6 +73,11 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("Configurações")
         self.setMinimumSize(560, 460)
         self.setStyleSheet(DIALOG_STYLE)
+        # A altura mínima acima é só um piso — o conteúdo real (que cresce
+        # conforme os campos das abas) decide o tamanho de fato. Sem o
+        # resize() explícito abaixo, alguns gerenciadores de janela abrem o
+        # diálogo no tamanho mínimo em vez do sizeHint(), espremendo os
+        # campos mais novos (ex.: a seção de transcrição ao vivo).
         self.config = load_config()
 
         layout = QVBoxLayout(self)
@@ -95,6 +100,8 @@ class SettingsDialog(QDialog):
         buttons.addWidget(btn_cancel)
         buttons.addWidget(btn_save)
         layout.addLayout(buttons)
+
+        self.resize(self.sizeHint())
 
     # ── Abas ──────────────────────────────────────────────────────────────────
 
