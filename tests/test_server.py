@@ -205,6 +205,13 @@ def test_diarize_defaults_to_false(monkeypatch, tmp_path):
 # ── Transcrição ao vivo (WebSocket) ─────────────────────────────────────────────
 
 def _live_pcm_window():
+    """Uma janela cheia com energia suficiente para não ser tratada como
+    silêncio — janela muda é pulada antes de chegar ao modelo."""
+    from alex_transcritor.live_windowing import WINDOW_BYTES
+    return b"\x00\x10" * (WINDOW_BYTES // 2)  # amplitude 4096 em s16le
+
+
+def _live_pcm_silence():
     from alex_transcritor.live_windowing import WINDOW_BYTES
     return b"\x00" * WINDOW_BYTES
 
@@ -232,7 +239,9 @@ def test_live_transcribes_a_window_and_returns_segment(monkeypatch, tmp_path):
     monkeypatch.setattr(live_server, "load_model", lambda name: "fake-model")
     monkeypatch.setattr(
         live_server, "transcribe_window",
-        lambda model, window, language: [{"start": 0.0, "end": 1.0, "text": "ola mundo"}],
+        lambda model, window, language, initial_prompt="": [
+            {"start": 0.0, "end": 1.0, "text": "ola mundo"}
+        ],
     )
     with _client(monkeypatch, tmp_path) as client:
         with client.websocket_connect("/v1/live", headers=_headers()) as ws:
@@ -243,6 +252,75 @@ def test_live_transcribes_a_window_and_returns_segment(monkeypatch, tmp_path):
             ws.send_bytes(_live_pcm_window())
             message = ws.receive_json()
     assert message == {"text": "ola mundo", "start_s": 0.0, "end_s": 1.0, "is_final": True}
+
+
+def test_live_skips_silent_windows_without_touching_the_model(monkeypatch, tmp_path):
+    """Alimentar silêncio ao Whisper é a origem clássica de alucinação — janela
+    muda nem chega ao modelo. Também economiza GPU."""
+    monkeypatch.setattr(live_server, "load_model", lambda name: "fake-model")
+    chamadas = []
+
+    def _registra(model, window, language, initial_prompt=""):
+        chamadas.append(window)
+        return [{"start": 0.0, "end": live_server.WINDOW_S / 2, "text": "só a janela com som"}]
+
+    monkeypatch.setattr(live_server, "transcribe_window", _registra)
+    with _client(monkeypatch, tmp_path) as client:
+        with client.websocket_connect("/v1/live", headers=_headers()) as ws:
+            ws.send_json({"language": "pt", "model": "tiny"})
+            assert ws.receive_json() == {"status": "ready"}
+            ws.send_bytes(_live_pcm_silence())
+            # Só depois de áudio com energia é que vem resposta — prova que a
+            # janela silenciosa foi descartada sem inferência.
+            ws.send_bytes(_live_pcm_window())
+            message = ws.receive_json()
+    assert message["text"] == "só a janela com som"
+    assert len(chamadas) == 1  # a janela silenciosa não chegou ao modelo
+
+
+def test_speech_after_initial_silence_keeps_its_beginning(monkeypatch, tmp_path):
+    """Regressão: pular uma janela silenciosa não pode marcá-la como janela
+    anterior "já emitida" — senão a primeira fala depois do silêncio perde o
+    começo, exatamente o caso de uma gravação que começa em silêncio."""
+    monkeypatch.setattr(live_server, "load_model", lambda name: "fake-model")
+    # Segmento inteiramente dentro da sobreposição: só sobrevive se a janela
+    # ainda for tratada como a primeira.
+    from alex_transcritor.live_windowing import OVERLAP_S
+    inicio = OVERLAP_S / 2
+    monkeypatch.setattr(
+        live_server, "transcribe_window",
+        lambda model, window, language, initial_prompt="": [
+            {"start": 0.0, "end": inicio, "text": "bom dia"}
+        ],
+    )
+    with _client(monkeypatch, tmp_path) as client:
+        with client.websocket_connect("/v1/live", headers=_headers()) as ws:
+            ws.send_json({"language": "pt", "model": "tiny"})
+            assert ws.receive_json() == {"status": "ready"}
+            ws.send_bytes(_live_pcm_silence())   # reunião começa em silêncio
+            ws.send_bytes(_live_pcm_window())    # e então alguém fala
+            message = ws.receive_json()
+    assert message["text"] == "bom dia"
+
+
+def test_live_forwards_the_vocabulary_prompt(monkeypatch, tmp_path):
+    """O vocabulário do usuário reduz muito o erro em nomes próprios — o passe
+    ao vivo tem que receber o mesmo prompt do passe final."""
+    monkeypatch.setattr(live_server, "load_model", lambda name: "fake-model")
+    recebido = {}
+
+    def _captura(model, window, language, initial_prompt=""):
+        recebido["prompt"] = initial_prompt
+        return [{"start": 0.0, "end": 1.0, "text": "ok"}]
+
+    monkeypatch.setattr(live_server, "transcribe_window", _captura)
+    with _client(monkeypatch, tmp_path) as client:
+        with client.websocket_connect("/v1/live", headers=_headers()) as ws:
+            ws.send_json({"language": "pt", "model": "tiny", "initial_prompt": "PipeWire, Kubernetes"})
+            assert ws.receive_json() == {"status": "ready"}
+            ws.send_bytes(_live_pcm_window())
+            ws.receive_json()
+    assert recebido["prompt"] == "PipeWire, Kubernetes"
 
 
 def test_live_model_load_failure_sends_error_and_closes(monkeypatch, tmp_path):
@@ -260,7 +338,7 @@ def test_live_model_load_failure_sends_error_and_closes(monkeypatch, tmp_path):
 def test_live_transcribe_failure_sends_error_but_keeps_session_open(monkeypatch, tmp_path):
     monkeypatch.setattr(live_server, "load_model", lambda name: "fake-model")
 
-    def _raise(model, window, language):
+    def _raise(model, window, language, initial_prompt=""):
         raise RuntimeError("janela corrompida")
 
     monkeypatch.setattr(live_server, "transcribe_window", _raise)

@@ -13,12 +13,23 @@ BYTES_PER_SECOND = 16000 * 2
 
 #: Janela de decodificação e sobreposição usada só como contexto acústico —
 #: o texto da sobreposição já foi emitido pela janela anterior e é descartado
-#: (ver ``should_emit``), não reemitido. O piso mínimo de latência é
-#: WINDOW_S + tempo de transcrição — reduzir a janela é o jeito mais direto
-#: de acelerar a resposta, à custa de um pouco menos de contexto por trecho
-#: decodificado (mais chance de fragmentação, principalmente em CPU).
-WINDOW_S = 2.0
-OVERLAP_S = 0.5
+#: (ver ``should_emit``), não reemitido.
+#:
+#: O piso de latência é WINDOW_S + tempo de inferência, mas encurtar a janela
+#: **destrói a qualidade**: o Whisper foi treinado com 30 s de contexto e
+#: degrada muito com trechos curtos isolados. Medido na RX 9070 com a mesma
+#: frase, modelo "small":
+#:
+#:   2 s → "Vamos começar a reunir a união" / "pois alemos sob o cronóter"
+#:   4 s → "Bom dia a todos. Vamos começar a reunião de hoje."
+#:   6 s → frase inteira correta, incluindo "o primeiro ponto é o relatório"
+#:
+#: 6 s é o valor escolhido: foi o único que transcreveu a frase inteira sem
+#: erro no teste acima. Texto ilegível não serve para nada, por mais rápido
+#: que chegue — e ~6 s de atraso ainda dá para acompanhar uma reunião.
+#: Baixar para 4 s troca precisão por ~2 s de latência, se preferir.
+WINDOW_S = 6.0
+OVERLAP_S = 1.5
 WINDOW_BYTES = int(WINDOW_S * BYTES_PER_SECOND)
 OVERLAP_BYTES = int(OVERLAP_S * BYTES_PER_SECOND)
 ADVANCE_BYTES = WINDOW_BYTES - OVERLAP_BYTES

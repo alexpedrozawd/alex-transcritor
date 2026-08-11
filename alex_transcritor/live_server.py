@@ -46,22 +46,58 @@ def load_model(model_name: str):
     return whisper.load_model(model_name, device="cuda")
 
 
-def transcribe_window(model, window: bytes, language: str) -> list[dict]:
+#: Abaixo deste RMS (em áudio normalizado -1..1) a janela é tratada como sem
+#: fala e nem chega ao modelo. Whisper foi treinado com janelas de 30s e faz
+#: padding com silêncio nas curtas — alimentar silêncio quase puro é a receita
+#: clássica de alucinação ("Legendas pela comunidade...", tokens CJK soltos).
+#: Também economiza GPU: janela muda não custa inferência nenhuma.
+SILENCE_RMS = 0.005
+
+#: Segmento que o próprio modelo considera provável não-fala é descartado.
+#: O limiar interno do Whisper não basta quando cada janela é decodificada
+#: isoladamente, sem o contexto de 30s que ele espera.
+MAX_NO_SPEECH_PROB = 0.6
+
+
+def is_silent(window: bytes) -> bool:
+    """True quando a janela não tem energia suficiente para conter fala."""
+    import numpy as np
+
+    samples = np.frombuffer(window, dtype=np.int16).astype(np.float32) / 32768.0
+    if samples.size == 0:
+        return True
+    return float(np.sqrt(np.mean(samples**2))) < SILENCE_RMS
+
+
+def transcribe_window(model, window: bytes, language: str, initial_prompt: str = "") -> list[dict]:
     """Roda uma janela de PCM bruto pelo whisper; devolve os segmentos brutos
-    (``start``/``end``/``text``, mesmo shape usado no merge de diarização)."""
+    (``start``/``end``/``text``, mesmo shape usado no merge de diarização).
+
+    As flags espelham o passe em lote (``server.py::JobManager._run_whisper``),
+    que produz texto limpo nesta mesma GPU. A diferença mais importante é
+    ``temperature=0``: com o padrão do Whisper, uma decodificação que bate nos
+    limiares internos é refeita com temperatura crescente até 1.0 — e
+    temperatura alta numa janela curta gera exatamente o texto alucinado, com
+    caracteres de outros alfabetos, visto em uso real.
+    """
     import numpy as np
 
     audio_array = np.frombuffer(window, dtype=np.int16).astype(np.float32) / 32768.0
     result = model.transcribe(
         audio_array,
-        language=language,
-        # Mesmas flags anti-alucinação já validadas no passe em lote desta
-        # GPU (server.py::JobManager._run_whisper) — sem elas o Whisper
-        # tende a repetir a janela anterior em trechos de silêncio/ruído.
+        # "auto" não é um código de idioma: o Whisper espera None para
+        # detectar sozinho. O passe em lote já trata assim, omitindo a flag.
+        language=None if language in ("", "auto") else language,
+        initial_prompt=initial_prompt or None,
+        temperature=0.0,
+        beam_size=5,
         condition_on_previous_text=False,
         fp16=True,
     )
-    return result["segments"]
+    return [
+        seg for seg in result["segments"]
+        if seg.get("no_speech_prob", 0.0) <= MAX_NO_SPEECH_PROB
+    ]
 
 
 def segments_to_live_segments(

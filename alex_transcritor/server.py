@@ -432,6 +432,9 @@ def create_app() -> FastAPI:
             return
         language = opening.get("language", "pt") if isinstance(opening, dict) else "pt"
         model_name = opening.get("model", "small") if isinstance(opening, dict) else "small"
+        initial_prompt = opening.get("initial_prompt", "") if isinstance(opening, dict) else ""
+        if len(initial_prompt) > 700:  # mesmo teto do passe em lote
+            initial_prompt = initial_prompt[:700]
 
         try:
             model = await asyncio.to_thread(live_server.load_model, model_name)
@@ -457,9 +460,21 @@ def create_app() -> FastAPI:
             buffer, window = live_server.accumulate(buffer, data)
             if window is None:
                 continue
+            if live_server.is_silent(window):
+                # Sem fala: nem chega ao modelo. Alimentar silêncio ao Whisper
+                # é a origem clássica de alucinação, e pular economiza GPU.
+                #
+                # `first_window` continua True de propósito: ele existe só para
+                # descartar texto da sobreposição que a janela anterior já
+                # emitiu. Se nada foi emitido, não há o que deduplicar — e
+                # marcá-lo aqui faria a primeira fala depois de um silêncio
+                # perder o começo, justamente o caso de uma gravação que
+                # começa em silêncio.
+                elapsed_s += live_server.ADVANCE_BYTES / live_server.BYTES_PER_SECOND
+                continue
             try:
                 raw_segments = await asyncio.to_thread(
-                    live_server.transcribe_window, model, window, language
+                    live_server.transcribe_window, model, window, language, initial_prompt
                 )
             except Exception as exc:
                 await websocket.send_json({"error": str(exc)})

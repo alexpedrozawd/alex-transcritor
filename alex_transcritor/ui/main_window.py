@@ -435,6 +435,9 @@ class MainWindow(QMainWindow):
                     remote_url=config["remote_url"],
                     token=config["remote_token"],
                     language=config["language"],
+                    # Mesmo vocabulário do passe final: nomes próprios e jargão
+                    # erram muito menos quando vão como contexto.
+                    initial_prompt=get_initial_prompt(),
                 )
             else:
                 self.live_transcriber = LiveTranscriber(

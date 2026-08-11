@@ -62,10 +62,13 @@ def test_sends_opening_message_and_pcm_chunks(qtbot, monkeypatch):
     payload = b"\x00" * 100
     transcriber = RemoteLiveTranscriber(
         io.BytesIO(payload), "http://host:8300", "tok", language="pt", model="small",
+        initial_prompt="PipeWire, Kubernetes",
     )
     transcriber.start()
     assert transcriber.wait(3000)
-    assert fake_ws.sent_text == [json.dumps({"language": "pt", "model": "small"})]
+    assert json.loads(fake_ws.sent_text[0]) == {
+        "language": "pt", "model": "small", "initial_prompt": "PipeWire, Kubernetes",
+    }
     assert b"".join(fake_ws.sent_bytes) == payload
     assert fake_ws.closed
 

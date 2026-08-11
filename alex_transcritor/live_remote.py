@@ -58,6 +58,7 @@ class RemoteLiveTranscriber(QThread):
         token: str,
         language: str = "pt",
         model: str = "small",
+        initial_prompt: str = "",
     ) -> None:
         super().__init__()
         self._stdout = stdout
@@ -65,6 +66,7 @@ class RemoteLiveTranscriber(QThread):
         self.token = token
         self.language = language
         self.model = model
+        self.initial_prompt = initial_prompt
         self._stopped = False
         self._ws = None
         self._chunks: queue.Queue[bytes | None] = queue.Queue()
@@ -96,7 +98,11 @@ class RemoteLiveTranscriber(QThread):
                 header=[f"Authorization: Bearer {self.token}"],
                 timeout=CONNECT_TIMEOUT_S,
             )
-            self._ws.send_text(json.dumps({"language": self.language, "model": self.model}))
+            self._ws.send_text(json.dumps({
+                "language": self.language,
+                "model": self.model,
+                "initial_prompt": self.initial_prompt,
+            }))
             self.status.emit("Preparando o modelo no servidor...")
             self._ws.settimeout(READY_TIMEOUT_S)
             ready = self._await_ready()
