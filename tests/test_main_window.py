@@ -259,6 +259,30 @@ def test_start_recording_live_transcription_enabled_starts_engine(
     assert not window.live_panel.isHidden()
 
 
+def test_start_recording_live_transcription_uses_gpu_when_backend_is_remote(
+    window, popen, live_thread, tmp_path
+):
+    """A GPU local fica ociosa a gravação inteira quando o passe final é
+    remoto — sem risco de disputar VRAM, então a transcrição ao vivo pode
+    usá-la em vez de ficar restrita à CPU."""
+    cfg.update_config(live_transcription=True, transcription_backend="remote")
+    window.input_dir.setText(str(tmp_path))
+    window._start_recording()
+    assert live_thread.call_args.kwargs["device"] == "cuda"
+
+
+def test_start_recording_live_transcription_stays_on_cpu_when_backend_is_local(
+    window, popen, live_thread, tmp_path
+):
+    """Só quando o passe final também é local (mesma GPU) a transcrição ao
+    vivo continua restrita à CPU — é a única situação com risco real de
+    disputa de VRAM entre os dois motores."""
+    cfg.update_config(live_transcription=True, transcription_backend="local")
+    window.input_dir.setText(str(tmp_path))
+    window._start_recording()
+    assert live_thread.call_args.kwargs["device"] == "cpu"
+
+
 def test_start_recording_live_transcriber_failure_does_not_block_recording(
     window, popen, monkeypatch, tmp_path
 ):

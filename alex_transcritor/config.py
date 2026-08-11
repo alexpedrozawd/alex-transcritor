@@ -39,7 +39,7 @@ DEFAULTS: dict = {
     "diarize_speakers": False,  # opt-in, remoto apenas — exige token HF configurado no servidor
     "live_transcription": False,  # opt-in — exige faster-whisper instalado
     "live_model": "tiny",         # o menor: em CPU, "small" nem com beam_size=1 acompanha em tempo real
-    "live_device": "cpu",         # evita contenção de VRAM com o passe final na GPU
+    "live_device": "cpu",         # usado só quando o passe final também é local (ver MainWindow._live_device)
 }
 
 

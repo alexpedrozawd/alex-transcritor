@@ -411,6 +411,18 @@ class MainWindow(QMainWindow):
         # interface anuncia "gravando" enquanto nada é capturado.
         QTimer.singleShot(FFMPEG_CHECK_MS, self._verify_recording_started)
 
+    @staticmethod
+    def _live_device(config: dict) -> str:
+        """GPU local quando o passe final é remoto — a GPU fica ociosa a
+        gravação inteira nesse caso, sem risco de disputar VRAM com nada.
+        Só quando o passe final também é local (mesma GPU, mesma janela de
+        tempo na transição Parar → passe final) a transcrição ao vivo fica
+        em CPU, evitando a contenção que motivou essa restrição originalmente.
+        """
+        if config["transcription_backend"] == "remote":
+            return "cuda"
+        return config["live_device"]
+
     def _start_live_transcriber(self, config: dict) -> None:
         """Best-effort: qualquer falha aqui só avisa no painel, nunca a gravação principal."""
         self.live_panel.clear()
@@ -422,7 +434,7 @@ class MainWindow(QMainWindow):
             self.live_transcriber = LiveTranscriber(
                 process.stdout,
                 model_size=config["live_model"],
-                device=config["live_device"],
+                device=self._live_device(config),
                 language=config["language"],
             )
             self.live_transcriber.segment.connect(self.live_panel.append_segment)

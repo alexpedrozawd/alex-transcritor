@@ -194,8 +194,10 @@ class SettingsDialog(QDialog):
         form.addRow(QLabel("MODELO AO VIVO"), self.combo_live_model)
         form.addRow(self._hint(
             "Experimental, roda em blocos de alguns segundos (não é legenda "
-            "instantânea) e sempre em CPU, para não disputar VRAM com o passe "
-            "final. Exige o pacote opcional faster-whisper instalado."
+            "instantânea). Usa a GPU local quando o passe final é remoto (ela "
+            "fica ociosa nesse caso); roda em CPU só quando o passe final "
+            "também é local, para não disputar VRAM. Exige o pacote opcional "
+            "faster-whisper instalado."
         ))
 
         self._sync_backend_fields()
