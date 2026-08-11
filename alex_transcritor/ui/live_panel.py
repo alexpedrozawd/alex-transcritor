@@ -8,8 +8,16 @@ from ..live import LiveSegment
 
 
 class LivePanel(QWidget):
-    """Segmentos finalizados viram parágrafos; o provisório fica em itálico e é
-    substituído no lugar a cada nova decodificação — nunca acumulado."""
+    """Cada segmento recebido entra na caixa e fica lá — a transcrição só
+    cresce durante a gravação, nunca some ou é substituída.
+
+    ``LiveSegment.is_final`` não distingue nada aqui de propósito: nada
+    nesta implementação corrige um trecho já mostrado depois (a janela
+    seguinte só evita reprocessar o áudio já coberto, não "revisa" o texto
+    anterior) — então marcar um trecho como "provisório" e trocá-lo no lugar
+    só fazia a tela parecer perder texto em fala contínua, sem pausas longas
+    o bastante para algo ser considerado "final".
+    """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -28,31 +36,21 @@ class LivePanel(QWidget):
         layout.addWidget(label)
         layout.addWidget(self._text)
 
-        self._finalized: list[str] = []
-        self._provisional: str = ""
+        self._lines: list[str] = []
 
     def clear(self) -> None:
-        self._finalized = []
-        self._provisional = ""
+        self._lines = []
         self._text.clear()
 
     def append_segment(self, seg: LiveSegment) -> None:
-        if seg.is_final:
-            self._finalized.append(seg.text)
-            self._provisional = ""
-        else:
-            self._provisional = seg.text
+        self._lines.append(seg.text)
         self._render()
 
     def show_unavailable(self, reason: str) -> None:
         self._text.setPlainText(f"Transcrição ao vivo indisponível: {reason}")
 
     def _render(self) -> None:
-        parts = [html.escape(p) for p in self._finalized]
-        body = " ".join(parts)
-        if self._provisional:
-            provisional = html.escape(self._provisional)
-            body += f' <span style="color:#8a8a8a; font-style:italic;">{provisional}</span>'
+        body = " ".join(html.escape(p) for p in self._lines)
         self._text.setHtml(body)
         bar = self._text.verticalScrollBar()
         bar.setValue(bar.maximum())
