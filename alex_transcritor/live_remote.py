@@ -59,6 +59,7 @@ class RemoteLiveTranscriber(QThread):
         language: str = "pt",
         model: str = "small",
         initial_prompt: str = "",
+        diarize: bool = False,
     ) -> None:
         super().__init__()
         self._stdout = stdout
@@ -67,6 +68,7 @@ class RemoteLiveTranscriber(QThread):
         self.language = language
         self.model = model
         self.initial_prompt = initial_prompt
+        self.diarize = diarize
         self._stopped = False
         self._ws = None
         self._chunks: queue.Queue[bytes | None] = queue.Queue()
@@ -102,6 +104,7 @@ class RemoteLiveTranscriber(QThread):
                 "language": self.language,
                 "model": self.model,
                 "initial_prompt": self.initial_prompt,
+                "diarize": self.diarize,
             }))
             self.status.emit("Preparando o modelo no servidor...")
             self._ws.settimeout(READY_TIMEOUT_S)
@@ -193,6 +196,7 @@ class RemoteLiveTranscriber(QThread):
                 start_s=payload["start_s"],
                 end_s=payload["end_s"],
                 is_final=payload["is_final"],
+                speaker=payload.get("speaker", ""),
             )
         except KeyError:
             return

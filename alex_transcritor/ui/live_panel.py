@@ -7,6 +7,13 @@ from PyQt6.QtWidgets import QVBoxLayout, QLabel, QTextEdit, QWidget
 from ..live import LiveSegment
 
 
+def _bloco(locutor: str | None, partes: list[str]) -> str:
+    texto = html.escape(" ".join(partes))
+    if not locutor:
+        return texto
+    return f'<b style="color:#8ab4f8;">{html.escape(locutor)}:</b> {texto}'
+
+
 class LivePanel(QWidget):
     """Cada segmento recebido entra na caixa e fica lá — a transcrição só
     cresce durante a gravação, nunca some ou é substituída.
@@ -36,14 +43,15 @@ class LivePanel(QWidget):
         layout.addWidget(label)
         layout.addWidget(self._text)
 
-        self._lines: list[str] = []
+        #: (locutor, texto) — locutor vazio quando não há diarização.
+        self._lines: list[tuple[str, str]] = []
 
     def clear(self) -> None:
         self._lines = []
         self._text.clear()
 
     def append_segment(self, seg: LiveSegment) -> None:
-        self._lines.append(seg.text)
+        self._lines.append((seg.speaker, seg.text))
         self._render()
 
     def show_unavailable(self, reason: str) -> None:
@@ -58,7 +66,21 @@ class LivePanel(QWidget):
         self._text.setPlainText(message)
 
     def _render(self) -> None:
-        body = " ".join(html.escape(p) for p in self._lines)
-        self._text.setHtml(body)
+        # Falas seguidas da mesma pessoa viram um parágrafo só: repetir
+        # "Pessoa 1:" a cada bloco de poucos segundos polui a leitura.
+        blocos: list[str] = []
+        atual_locutor: str | None = None
+        atual_texto: list[str] = []
+        for locutor, texto in self._lines:
+            if locutor != atual_locutor:
+                if atual_texto:
+                    blocos.append(_bloco(atual_locutor, atual_texto))
+                atual_locutor, atual_texto = locutor, [texto]
+            else:
+                atual_texto.append(texto)
+        if atual_texto:
+            blocos.append(_bloco(atual_locutor, atual_texto))
+
+        self._text.setHtml("<br><br>".join(blocos) if len(blocos) > 1 else "".join(blocos))
         bar = self._text.verticalScrollBar()
         bar.setValue(bar.maximum())

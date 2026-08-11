@@ -4,8 +4,8 @@ from alex_transcritor.live import LiveSegment
 from alex_transcritor.ui.live_panel import LivePanel
 
 
-def _seg(text: str, is_final: bool = True) -> LiveSegment:
-    return LiveSegment(text=text, start_s=0.0, end_s=1.0, is_final=is_final)
+def _seg(text: str, is_final: bool = True, speaker: str = "") -> LiveSegment:
+    return LiveSegment(text=text, start_s=0.0, end_s=1.0, is_final=is_final, speaker=speaker)
 
 
 def test_segments_accumulate_instead_of_replacing_each_other(qtbot):
@@ -39,6 +39,34 @@ def test_show_unavailable_overwrites_with_the_reason(qtbot):
     panel.append_segment(_seg("texto que já apareceu"))
     panel.show_unavailable("faster-whisper não instalado")
     assert "faster-whisper não instalado" in panel._text.toPlainText()
+
+
+def test_speaker_labels_are_shown(qtbot):
+    panel = LivePanel()
+    qtbot.addWidget(panel)
+    panel.append_segment(_seg("bom dia", speaker="Pessoa 1"))
+    panel.append_segment(_seg("bom dia pra você", speaker="Pessoa 2"))
+    texto = panel._text.toPlainText()
+    assert "Pessoa 1: bom dia" in texto
+    assert "Pessoa 2: bom dia pra você" in texto
+
+
+def test_consecutive_turns_of_the_same_speaker_are_merged(qtbot):
+    """Repetir "Pessoa 1:" a cada bloco de poucos segundos polui a leitura."""
+    panel = LivePanel()
+    qtbot.addWidget(panel)
+    panel.append_segment(_seg("primeira parte", speaker="Pessoa 1"))
+    panel.append_segment(_seg("segunda parte", speaker="Pessoa 1"))
+    texto = panel._text.toPlainText()
+    assert texto.count("Pessoa 1") == 1
+    assert "primeira parte segunda parte" in texto
+
+
+def test_without_diarization_no_label_prefix(qtbot):
+    panel = LivePanel()
+    qtbot.addWidget(panel)
+    panel.append_segment(_seg("texto simples"))
+    assert panel._text.toPlainText().strip() == "texto simples"
 
 
 def test_special_characters_are_escaped_not_interpreted_as_html(qtbot):

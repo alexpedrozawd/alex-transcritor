@@ -251,7 +251,9 @@ def test_live_transcribes_a_window_and_returns_segment(monkeypatch, tmp_path):
             assert ws.receive_json() == {"status": "ready"}
             ws.send_bytes(_live_pcm_window())
             message = ws.receive_json()
-    assert message == {"text": "ola mundo", "start_s": 0.0, "end_s": 1.0, "is_final": True}
+    assert message == {
+        "text": "ola mundo", "start_s": 0.0, "end_s": 1.0, "is_final": True, "speaker": "",
+    }
 
 
 def test_live_skips_silent_windows_without_touching_the_model(monkeypatch, tmp_path):
@@ -321,6 +323,90 @@ def test_live_forwards_the_vocabulary_prompt(monkeypatch, tmp_path):
             ws.send_bytes(_live_pcm_window())
             ws.receive_json()
     assert recebido["prompt"] == "PipeWire, Kubernetes"
+
+
+def _mock_live_transcription(monkeypatch, text="alguém falando"):
+    monkeypatch.setattr(live_server, "load_model", lambda name: "fake-model")
+    monkeypatch.setattr(
+        live_server, "transcribe_window",
+        lambda model, window, language, initial_prompt="": [
+            {"start": 0.0, "end": live_server.WINDOW_S / 2, "text": text}
+        ],
+    )
+
+
+def test_live_labels_speakers_when_requested(monkeypatch, tmp_path):
+    _mock_live_transcription(monkeypatch)
+    monkeypatch.setattr(
+        live_server, "diarize_pcm",
+        lambda pcm, token: [(0.0, live_server.WINDOW_S, "SPEAKER_00")],
+    )
+    with _client(monkeypatch, tmp_path, hf_token="hf_" + "x" * 30) as client:
+        with client.websocket_connect("/v1/live", headers=_headers()) as ws:
+            ws.send_json({"language": "pt", "model": "tiny", "diarize": True})
+            assert ws.receive_json() == {"status": "ready"}
+            # A diarização roda a cada N janelas — manda o suficiente para
+            # fechar esse ciclo.
+            for _ in range(live_server.DIARIZE_EVERY_N_WINDOWS):
+                ws.send_bytes(_live_pcm_window())
+                message = ws.receive_json()
+    assert message["speaker"] == "Pessoa 1"
+
+
+def test_live_without_diarize_flag_never_calls_the_pipeline(monkeypatch, tmp_path):
+    _mock_live_transcription(monkeypatch)
+    chamadas = []
+    monkeypatch.setattr(
+        live_server, "diarize_pcm",
+        lambda pcm, token: chamadas.append(pcm) or [],
+    )
+    with _client(monkeypatch, tmp_path, hf_token="hf_" + "x" * 30) as client:
+        with client.websocket_connect("/v1/live", headers=_headers()) as ws:
+            ws.send_json({"language": "pt", "model": "tiny"})  # sem diarize
+            assert ws.receive_json() == {"status": "ready"}
+            for _ in range(live_server.DIARIZE_EVERY_N_WINDOWS):
+                ws.send_bytes(_live_pcm_window())
+                message = ws.receive_json()
+    assert chamadas == []
+    assert message["speaker"] == ""
+
+
+def test_live_diarization_failure_keeps_the_transcription_running(monkeypatch, tmp_path):
+    """Rótulo de locutor é um extra: falhar nele não pode calar o painel."""
+    _mock_live_transcription(monkeypatch, text="continua transcrevendo")
+
+    def _explode(pcm, token):
+        raise RuntimeError("modelo com acesso negado")
+
+    monkeypatch.setattr(live_server, "diarize_pcm", _explode)
+    with _client(monkeypatch, tmp_path, hf_token="hf_" + "x" * 30) as client:
+        with client.websocket_connect("/v1/live", headers=_headers()) as ws:
+            ws.send_json({"language": "pt", "model": "tiny", "diarize": True})
+            assert ws.receive_json() == {"status": "ready"}
+            textos, erros = [], []
+            for _ in range(live_server.DIARIZE_EVERY_N_WINDOWS + 1):
+                ws.send_bytes(_live_pcm_window())
+                msg = ws.receive_json()
+                (erros if "error" in msg else textos).append(msg)
+    assert any("acesso negado" in e["error"] for e in erros)
+    assert any(t["text"] == "continua transcrevendo" for t in textos)
+
+
+def test_live_diarize_ignored_without_hf_token(monkeypatch, tmp_path):
+    _mock_live_transcription(monkeypatch)
+    chamadas = []
+    monkeypatch.setattr(
+        live_server, "diarize_pcm", lambda pcm, token: chamadas.append(pcm) or [],
+    )
+    with _client(monkeypatch, tmp_path, hf_token=None) as client:
+        with client.websocket_connect("/v1/live", headers=_headers()) as ws:
+            ws.send_json({"language": "pt", "model": "tiny", "diarize": True})
+            assert ws.receive_json() == {"status": "ready"}
+            for _ in range(live_server.DIARIZE_EVERY_N_WINDOWS):
+                ws.send_bytes(_live_pcm_window())
+                message = ws.receive_json()
+    assert chamadas == []          # sem token, nem tenta
+    assert message["speaker"] == ""  # e a transcrição segue normal
 
 
 def test_live_model_load_failure_sends_error_and_closes(monkeypatch, tmp_path):

@@ -435,6 +435,10 @@ def create_app() -> FastAPI:
         initial_prompt = opening.get("initial_prompt", "") if isinstance(opening, dict) else ""
         if len(initial_prompt) > 700:  # mesmo teto do passe em lote
             initial_prompt = initial_prompt[:700]
+        # Diarização ao vivo é best-effort: sem token configurado, o resto da
+        # sessão continua funcionando normalmente, só sem rótulos de locutor.
+        want_speakers = bool(opening.get("diarize")) if isinstance(opening, dict) else False
+        diarizing = want_speakers and bool(manager.hf_token)
 
         try:
             model = await asyncio.to_thread(live_server.load_model, model_name)
@@ -450,6 +454,17 @@ def create_app() -> FastAPI:
         buffer = b""
         elapsed_s = 0.0
         first_window = True
+        # Contexto deslizante para a diarização: os rótulos do pyannote são
+        # locais ao áudio que ele recebe, então uma janela de 6s isolada daria
+        # identidades que trocam de pessoa a cada bloco. Com um trecho longo e
+        # sobreposto entre execuções, o SpeakerTracker consegue casar quem é quem.
+        rolling = bytearray()
+        received_bytes = 0
+        windows_done = 0
+        speaker_turns: list[tuple[float, float, str]] = []
+        tracker = live_server.SpeakerTracker()
+        diarize_failed = False
+
         while True:
             message = await websocket.receive()
             if message.get("type") == "websocket.disconnect":
@@ -457,6 +472,10 @@ def create_app() -> FastAPI:
             data = message.get("bytes")
             if not data:
                 continue
+            received_bytes += len(data)
+            if diarizing:
+                rolling.extend(data)
+                del rolling[:-live_server.DIARIZE_CONTEXT_BYTES]
             buffer, window = live_server.accumulate(buffer, data)
             if window is None:
                 continue
@@ -481,12 +500,33 @@ def create_app() -> FastAPI:
                 elapsed_s += live_server.ADVANCE_BYTES / live_server.BYTES_PER_SECOND
                 first_window = False
                 continue
+            windows_done += 1
+            if diarizing and not diarize_failed and windows_done % live_server.DIARIZE_EVERY_N_WINDOWS == 0:
+                try:
+                    # O trecho deslizante começa em algum ponto do passado: os
+                    # turnos voltam relativos a ele e precisam virar tempo
+                    # absoluto da sessão para casar com os segmentos do texto.
+                    offset_s = (received_bytes - len(rolling)) / live_server.BYTES_PER_SECOND
+                    raw_turns = await asyncio.to_thread(
+                        live_server.diarize_pcm, bytes(rolling), manager.hf_token
+                    )
+                    speaker_turns = tracker.label_turns(
+                        [(s + offset_s, e + offset_s, who) for s, e, who in raw_turns]
+                    )
+                except Exception as exc:
+                    # Não derruba a sessão: segue sem rótulos, avisando uma vez.
+                    diarize_failed = True
+                    await websocket.send_json(
+                        {"error": f"Identificação de locutor indisponível: {exc}"}
+                    )
+
             for seg in live_server.segments_to_live_segments(raw_segments, elapsed_s, first_window):
                 await websocket.send_json({
                     "text": seg.text,
                     "start_s": seg.start_s,
                     "end_s": seg.end_s,
                     "is_final": seg.is_final,
+                    "speaker": live_server.speaker_for(seg.start_s, seg.end_s, speaker_turns),
                 })
             elapsed_s += live_server.ADVANCE_BYTES / live_server.BYTES_PER_SECOND
             first_window = False

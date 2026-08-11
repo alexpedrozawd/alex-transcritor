@@ -52,6 +52,7 @@ class LiveSegment:
     start_s: float
     end_s: float
     is_final: bool  # True = pausa detectada ao fim da janela, não será revisado
+    speaker: str = ""  # "Pessoa 1", "Pessoa 2"... vazio quando não há diarização
 
 
 def accumulate(buffer: bytes, chunk: bytes) -> tuple[bytes, bytes | None]:

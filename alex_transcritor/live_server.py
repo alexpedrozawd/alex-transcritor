@@ -58,6 +58,18 @@ SILENCE_RMS = 0.005
 #: isoladamente, sem o contexto de 30s que ele espera.
 MAX_NO_SPEECH_PROB = 0.6
 
+#: Contexto deslizante da diarização ao vivo. Precisa ser bem maior que a
+#: janela de transcrição: com poucos segundos o pyannote não tem material para
+#: separar vozes de forma consistente, e execuções consecutivas precisam
+#: compartilhar bastante áudio para o SpeakerTracker casar quem é quem.
+DIARIZE_CONTEXT_S = 45.0
+DIARIZE_CONTEXT_BYTES = int(DIARIZE_CONTEXT_S * BYTES_PER_SECOND)
+
+#: A diarização roda a cada N janelas transcritas, não em todas: ela custa bem
+#: mais que a transcrição de uma janela, e os rótulos mudam devagar. Ajustar
+#: se o atraso crescer — cada aumento aqui reduz o custo por bloco.
+DIARIZE_EVERY_N_WINDOWS = 2
+
 
 def is_silent(window: bytes) -> bool:
     """True quando a janela não tem energia suficiente para conter fala."""
@@ -98,6 +110,123 @@ def transcribe_window(model, window: bytes, language: str, initial_prompt: str =
         seg for seg in result["segments"]
         if seg.get("no_speech_prob", 0.0) <= MAX_NO_SPEECH_PROB
     ]
+
+
+#: O pipeline do pyannote é carregado uma vez e reaproveitado: ao vivo ele é
+#: chamado a cada poucos segundos, e recarregar o modelo toda vez dominaria o
+#: tempo de resposta. Ao contrário do passe em lote, que roda uma vez por job.
+_pipeline_cache: dict = {}
+
+
+def load_diarization_pipeline(hf_token: str):
+    if "pipeline" not in _pipeline_cache:
+        import torch
+
+        from . import diarize as diarize_module
+
+        if diarize_module.Pipeline is None:
+            raise RuntimeError("pyannote.audio não está instalado no servidor.")
+        pipeline = diarize_module.Pipeline.from_pretrained(
+            diarize_module.PIPELINE_ID, token=hf_token
+        )
+        pipeline.to(torch.device("cuda"))
+        _pipeline_cache["pipeline"] = pipeline
+    return _pipeline_cache["pipeline"]
+
+
+def diarize_pcm(pcm: bytes, hf_token: str) -> list[tuple[float, float, str]]:
+    """Roda a diarização sobre PCM bruto em memória.
+
+    Diferente de ``diarize.run_pipeline``, que recebe um caminho de arquivo:
+    aqui o áudio nunca chega a existir em disco — é o trecho deslizante que já
+    está na memória da sessão. Evita escrever gravação em disco a cada bloco.
+    """
+    import numpy as np
+    import torch
+
+    pipeline = load_diarization_pipeline(hf_token)
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    waveform = torch.from_numpy(samples).unsqueeze(0)  # (canal, tempo)
+    annotation = pipeline({"waveform": waveform, "sample_rate": 16000})
+    return [
+        (segment.start, segment.end, speaker)
+        for segment, _, speaker in annotation.itertracks(yield_label=True)
+    ]
+
+
+class SpeakerTracker:
+    """Mantém "Pessoa N" apontando para a mesma pessoa ao longo da sessão.
+
+    O pyannote agrupa vozes **dentro do áudio que recebe**: os rótulos
+    (``SPEAKER_00``...) são locais a cada execução. Rodando sobre uma janela
+    deslizante, nada garante que ``SPEAKER_00`` de agora seja o mesmo de 6 s
+    atrás — e um rótulo que troca de pessoa é pior que rótulo nenhum, porque
+    parece confiável e não é.
+
+    A estabilidade vem da sobreposição: execuções consecutivas compartilham
+    quase todo o áudio, então cada rótulo novo é casado com a pessoa que já
+    ocupava aqueles mesmos instantes na execução anterior. Só quando nada
+    coincide é que uma pessoa nova é criada.
+
+    Puro, sem GPU e sem modelo — testável com dados sintéticos.
+    """
+
+    def __init__(self) -> None:
+        self._history: list[tuple[float, float, str]] = []
+        self._count = 0
+
+    def label_turns(
+        self, turns: list[tuple[float, float, str]]
+    ) -> list[tuple[float, float, str]]:
+        """Converte turnos com rótulo bruto em turnos com "Pessoa N" estável."""
+        mapping: dict[str, str] = {}
+        for raw in _ordered_raw_labels(turns):
+            intervals = [(s, e) for s, e, label in turns if label == raw]
+            person = self._best_match(intervals, taken=set(mapping.values()))
+            if person is None:
+                self._count += 1
+                person = f"Pessoa {self._count}"
+            mapping[raw] = person
+
+        labeled = [(s, e, mapping[raw]) for s, e, raw in turns]
+        # O histórico guarda só a rodada mais recente: é o que descreve os
+        # instantes que a próxima execução vai reencontrar na sobreposição.
+        self._history = labeled
+        return labeled
+
+    def _best_match(
+        self, intervals: list[tuple[float, float]], taken: set[str]
+    ) -> str | None:
+        scores: dict[str, float] = {}
+        for start, end in intervals:
+            for h_start, h_end, person in self._history:
+                if person in taken:  # uma pessoa não pode receber dois rótulos
+                    continue
+                overlap = min(end, h_end) - max(start, h_start)
+                if overlap > 0:
+                    scores[person] = scores.get(person, 0.0) + overlap
+        if not scores:
+            return None
+        return max(scores, key=scores.get)
+
+
+def _ordered_raw_labels(turns: list[tuple[float, float, str]]) -> list[str]:
+    """Rótulos brutos por ordem de primeira fala, sem repetir."""
+    seen: list[str] = []
+    for _start, _end, label in sorted(turns, key=lambda t: t[0]):
+        if label not in seen:
+            seen.append(label)
+    return seen
+
+
+def speaker_for(start_s: float, end_s: float, turns: list[tuple[float, float, str]]) -> str:
+    """Quem fala num trecho: o turno com maior sobreposição temporal."""
+    best, best_overlap = "", 0.0
+    for t_start, t_end, person in turns:
+        overlap = min(end_s, t_end) - max(start_s, t_start)
+        if overlap > best_overlap:
+            best, best_overlap = person, overlap
+    return best
 
 
 def segments_to_live_segments(

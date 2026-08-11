@@ -438,6 +438,7 @@ class MainWindow(QMainWindow):
                     # Mesmo vocabulário do passe final: nomes próprios e jargão
                     # erram muito menos quando vão como contexto.
                     initial_prompt=get_initial_prompt(),
+                    diarize=config["diarize_speakers"],
                 )
             else:
                 self.live_transcriber = LiveTranscriber(

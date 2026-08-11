@@ -68,6 +68,7 @@ def test_sends_opening_message_and_pcm_chunks(qtbot, monkeypatch):
     assert transcriber.wait(3000)
     assert json.loads(fake_ws.sent_text[0]) == {
         "language": "pt", "model": "small", "initial_prompt": "PipeWire, Kubernetes",
+        "diarize": False,
     }
     assert b"".join(fake_ws.sent_bytes) == payload
     assert fake_ws.closed
