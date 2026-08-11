@@ -132,10 +132,8 @@ class LiveTranscriber(QThread):
             reader.join(timeout=5)
             return
 
-        try:
-            model = WhisperModel(self.model_size, device=self.device, compute_type="int8")
-        except Exception as exc:  # rede de segurança: modelo não deve matar a thread calado
-            self.failed.emit(f"Não foi possível carregar o modelo ao vivo: {exc}")
+        model = self._load_model()
+        if model is None:
             self.stop()
             reader.join(timeout=5)
             return
@@ -169,6 +167,24 @@ class LiveTranscriber(QThread):
 
         self._stopped = True
         reader.join(timeout=5)
+
+    def _load_model(self):
+        """Carrega o modelo no device pedido; se for GPU e falhar (driver
+        incompleto, bibliotecas CUDA ausentes etc.), tenta CPU antes de
+        desistir de vez — best-effort, gravação principal nunca depende
+        disto. Devolve ``None`` (já tendo emitido ``failed``) se as duas
+        tentativas falharem."""
+        try:
+            return WhisperModel(self.model_size, device=self.device, compute_type="int8")
+        except Exception as exc:
+            if self.device == "cpu":
+                self.failed.emit(f"Não foi possível carregar o modelo ao vivo: {exc}")
+                return None
+        try:
+            return WhisperModel(self.model_size, device="cpu", compute_type="int8")
+        except Exception as exc:
+            self.failed.emit(f"Não foi possível carregar o modelo ao vivo: {exc}")
+            return None
 
     def _read_loop(self) -> None:
         """Só drena o pipe, o mais rápido possível — nunca espera a transcrição."""

@@ -147,6 +147,64 @@ def test_pipe_is_drained_without_waiting_for_slow_transcription(qtbot, monkeypat
     writer.join(timeout=2)
 
 
+# ── Fallback de device: GPU indisponível cai para CPU ─────────────────────────
+
+def test_gpu_load_failure_falls_back_to_cpu(qtbot, monkeypatch):
+    """Reproduz o caso real: bibliotecas CUDA ausentes no venv do cliente
+    (libcublas.so.12 etc.) não podem deixar a transcrição ao vivo morta —
+    tenta CPU antes de desistir."""
+    attempts = []
+
+    class _FallbackModel:
+        def __init__(self, model_size, device, compute_type):
+            attempts.append(device)
+            if device != "cpu":
+                raise RuntimeError("Library libcublas.so.12 is not found or cannot be loaded")
+
+        def transcribe(self, audio, **kwargs):
+            return [_FakeSegment("funcionou na cpu", 0.1, 1.0)], None
+
+    monkeypatch.setattr(live, "WhisperModel", _FallbackModel)
+    stdout = io.BytesIO(b"\x00" * live.WINDOW_BYTES)
+    transcriber = live.LiveTranscriber(stdout, device="cuda")
+    with qtbot.waitSignal(transcriber.segment, timeout=3000) as blocker:
+        transcriber.start()
+    assert attempts == ["cuda", "cpu"]
+    assert blocker.args[0].text == "funcionou na cpu"
+    transcriber.wait(2000)
+
+
+def test_gpu_and_cpu_load_failure_emits_failed_once(qtbot, monkeypatch):
+    class _AlwaysFailsModel:
+        def __init__(self, model_size, device, compute_type):
+            raise RuntimeError(f"sem suporte a {device}")
+
+    monkeypatch.setattr(live, "WhisperModel", _AlwaysFailsModel)
+    transcriber = live.LiveTranscriber(io.BytesIO(b""), device="cuda")
+    with qtbot.waitSignal(transcriber.failed, timeout=2000) as blocker:
+        transcriber.start()
+    assert "cpu" in blocker.args[0]
+    transcriber.wait(2000)
+
+
+def test_cpu_load_failure_does_not_retry(qtbot, monkeypatch):
+    """Já pedindo CPU, uma falha não tenta de novo — só faz sentido reter
+    quando a primeira tentativa era GPU."""
+    attempts = []
+
+    class _FailsOnce:
+        def __init__(self, model_size, device, compute_type):
+            attempts.append(device)
+            raise RuntimeError("sem suporte")
+
+    monkeypatch.setattr(live, "WhisperModel", _FailsOnce)
+    transcriber = live.LiveTranscriber(io.BytesIO(b""), device="cpu")
+    with qtbot.waitSignal(transcriber.failed, timeout=2000):
+        transcriber.start()
+    assert attempts == ["cpu"]
+    transcriber.wait(2000)
+
+
 def test_falls_back_to_skipping_when_backlog_grows_too_large(qtbot, monkeypatch):
     """Regressão: sem limite de acúmulo, uma transcrição lenta nunca alcança o
     tempo real — a cada janela processada, mais áudio novo já se acumulou, e
