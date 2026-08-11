@@ -178,14 +178,14 @@ class LiveTranscriber(QThread):
         disto. Devolve ``None`` (já tendo emitido ``failed``) se as duas
         tentativas falharem.
 
-        ``compute_type`` varia por device: "int8" é o ganho de velocidade
-        certo em CPU, mas em GPU "float16" decodifica mais rápido — a GPU
-        tem suporte nativo a fp16, e o ganho do int8 ali é bem menor (às
-        vezes nem existe, dependendo da arquitetura).
+        ``compute_type="int8"`` para os dois devices: testado em uso real,
+        "float16" na GPU (GTX 1650, Turing sem Tensor Cores) piorou a
+        latência em vez de melhorar — provavelmente essa arquitetura não
+        acelera fp16 do jeito que GPUs com Tensor Cores fariam. int8 (via
+        DP4A) é suportado mesmo em GPUs sem Tensor Cores.
         """
         try:
-            compute_type = "int8" if self.device == "cpu" else "float16"
-            return WhisperModel(self.model_size, device=self.device, compute_type=compute_type)
+            return WhisperModel(self.model_size, device=self.device, compute_type="int8")
         except Exception as exc:
             if self.device == "cpu":
                 self.failed.emit(f"Não foi possível carregar o modelo ao vivo: {exc}")
