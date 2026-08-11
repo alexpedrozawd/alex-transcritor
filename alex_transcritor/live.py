@@ -26,9 +26,12 @@ BYTES_PER_SECOND = 16000 * 2
 
 #: Janela de decodificação e sobreposição usada só como contexto acústico —
 #: o texto da sobreposição já foi emitido pela janela anterior e é descartado
-#: (ver ``_should_emit``), não reemitido.
-WINDOW_S = 3.0
-OVERLAP_S = 0.75
+#: (ver ``_should_emit``), não reemitido. O piso mínimo de latência é
+#: WINDOW_S + tempo de transcrição — reduzir a janela é o jeito mais direto
+#: de acelerar a resposta, à custa de um pouco menos de contexto por trecho
+#: decodificado (mais chance de fragmentação, principalmente em CPU).
+WINDOW_S = 2.0
+OVERLAP_S = 0.5
 WINDOW_BYTES = int(WINDOW_S * BYTES_PER_SECOND)
 OVERLAP_BYTES = int(OVERLAP_S * BYTES_PER_SECOND)
 ADVANCE_BYTES = WINDOW_BYTES - OVERLAP_BYTES
@@ -173,9 +176,16 @@ class LiveTranscriber(QThread):
         incompleto, bibliotecas CUDA ausentes etc.), tenta CPU antes de
         desistir de vez — best-effort, gravação principal nunca depende
         disto. Devolve ``None`` (já tendo emitido ``failed``) se as duas
-        tentativas falharem."""
+        tentativas falharem.
+
+        ``compute_type`` varia por device: "int8" é o ganho de velocidade
+        certo em CPU, mas em GPU "float16" decodifica mais rápido — a GPU
+        tem suporte nativo a fp16, e o ganho do int8 ali é bem menor (às
+        vezes nem existe, dependendo da arquitetura).
+        """
         try:
-            return WhisperModel(self.model_size, device=self.device, compute_type="int8")
+            compute_type = "int8" if self.device == "cpu" else "float16"
+            return WhisperModel(self.model_size, device=self.device, compute_type=compute_type)
         except Exception as exc:
             if self.device == "cpu":
                 self.failed.emit(f"Não foi possível carregar o modelo ao vivo: {exc}")
