@@ -2,6 +2,116 @@
 
 Registro das alterações aplicadas durante as auditorias de qualidade, testes e segurança.
 
+## [5.0.0] — 2026-08-11
+
+### Transcrição ao vivo — painel durante a gravação
+
+Texto aparecendo enquanto a reunião acontece, em vez de só depois de parar.
+
+- Painel novo abaixo do status, visível durante a gravação e escondido fora dela.
+  Cada trecho recebido é acrescentado e **fica** — a transcrição só cresce.
+- **Dois motores**, escolhidos pelo mesmo `transcription_backend` do passe final,
+  sem opção nova nas Configurações:
+  - **remoto** (o usado na prática): áudio PCM enviado por WebSocket para o servidor,
+    que transcreve com `openai-whisper` na RX 9070 XT e devolve os segmentos;
+  - **local**: `faster-whisper` em CPU, dependência opcional (`requirements-live.txt`).
+- O áudio ao vivo sai como **segunda saída do mesmo processo ffmpeg**
+  (`record_command(..., live_pcm=True)`), sem tocar no arquivo gravado. Com duas
+  fontes, `asplit` duplica o mix — uma saída de filtro não pode ser consumida duas vezes.
+- Opt-in, desligado por padrão. Qualquer falha (pacote ausente, GPU indisponível,
+  rede caindo) é reportada no painel e **nunca** interrompe a gravação nem o passe final.
+- Handshake de `ready`: o cliente só começa a enviar áudio depois que o servidor
+  confirma que o modelo carregou — sem isso, o áudio capturado durante a carga
+  (que na primeira vez inclui baixar os pesos) era enfileirado e descartado.
+
+**Latência é limitada por desenho**: o piso é o tamanho da janela (2 s) mais o tempo
+de inferência. Não é legenda instantânea palavra a palavra como o Google Meet — Whisper
+decodifica em janelas, não token a token.
+
+### Diarização de locutores — quem falou
+
+- Só no **passe final remoto**, via `pyannote.audio`. O passe local e o painel ao vivo
+  ficaram de fora de propósito.
+- Rótulos genéricos (`Pessoa 1`, `Pessoa 2`...), numerados pela ordem de **primeira
+  fala**, não pela numeração interna do pyannote (que é arbitrária).
+- Junção por **sobreposição temporal máxima** entre os segmentos do Whisper (que passam
+  a sair em `--output_format json`, com timestamps) e os turnos do pyannote. Segmento
+  em silêncio entre turnos herda o locutor anterior.
+- Opt-in por gravação. **Degrada sem quebrar**: token do Hugging Face ausente, GPU sem
+  memória, modelo com acesso negado — qualquer falha mantém a transcrição comum e
+  devolve um aviso (`diarization_note`), em vez de derrubar o trabalho inteiro.
+
+### Defeitos corrigidos — todos encontrados testando em uso real
+
+Nenhum destes apareceu na suíte de testes; todos vieram de gravações de verdade no
+Acer Nitro 5, com log de terminal capturado.
+
+| Sintoma relatado | Causa real |
+|---|---|
+| App travava e exigia forçar o fechamento | Leitura do pipe e transcrição no mesmo loop: com a transcrição lenta, o buffer do pipe enchia e o **ffmpeg travava no `write()`** — a gravação inteira parava, não só o painel |
+| App fechava sozinho com CPU a 100% | `QThread: Destroyed while thread is still running` — checar `isRunning()` antes de conectar o sinal de limpeza tinha corrida; sem referência viva, o GC coletava o wrapper com a thread ainda rodando |
+| App sem resposta por minutos após Parar | Sem teto de acúmulo, a transcrição atrasada nunca alcançava o presente: cada janela processada deixava mais áudio acumulado |
+| Painel mudo, sem texto nem erro | `recv()` e `send()` no mesmo loop — cada volta esperava o timeout do socket por uma mensagem inexistente, o áudio era descartado por backlog e o servidor nunca completava uma janela |
+| "Conexão com o servidor perdida: timed out" | `settimeout()` vale para o socket inteiro, não só para o `recv()`: 0,1 s cortava envios legítimos de PCM |
+| Linhas do painel sumiam em vez de acumular | Heurística de "provisório vs. final" quase nunca marcava nada como final em fala contínua, e o provisório era substituído no lugar |
+| Transcrição ao vivo lenta e fragmentada | `beam_size` herdava o padrão 5 do faster-whisper — busca em feixe é inviável para janelas curtas em CPU |
+| "Library libcublas.so.12 is not found" | Bibliotecas CUDA não vêm com o driver; agora cai para CPU sozinho em vez de ficar morto |
+| Diálogo de Configurações espremido | `setMinimumSize` fixo era anterior aos campos novos; alguns gerenciadores abriam no piso em vez do `sizeHint()` |
+
+Uma tentativa de otimização foi **revertida**: `float16` na GPU piorou a latência em
+vez de melhorar na GTX 1650 (Turing, sem Tensor Cores). Voltou para `int8`.
+
+### Decisões de dependência — todas verificadas, não presumidas
+
+- **`pyannote.audio==4.0.7`**, não a linha 3.x: testado, 3.3.2 e 3.4.0 não importam com
+  o `torchaudio` atual (usam `torchaudio.AudioMetaData`, removido). A 4.x traz telemetria
+  OpenTelemetry **ligada por padrão** (envia dados para `otel.pyannote.ai` a cada uso) —
+  por isso `PYANNOTE_METRICS_ENABLED=false` é obrigatório no `server.env`, não opcional.
+- **`torchcodec` não carrega neste ROCm** (espera bibliotecas CUDA). Contornado em
+  `diarize.py`, que pré-carrega o áudio com `soundfile` em vez de deixar o pyannote
+  decodificar o arquivo sozinho.
+- **`faster-whisper==1.2.1`**, não 1.0.3: versões antigas fixam `av<13`, sem wheel para
+  Python 3.14 — compilar exigiria bibliotecas de desenvolvimento do ffmpeg.
+- **O motor ao vivo do servidor é `openai-whisper`, não `faster-whisper`**: o CTranslate2
+  por trás do faster-whisper só ganhou suporte ROCm recentemente e o repositório oficial
+  da AMD não tem release publicado. O `openai-whisper` já roda validado nessa GPU.
+- Instalação do pyannote confirmada segura quanto ao PyTorch ROCm já instalado: nem
+  `torch` nem `torchaudio` aparecem na lista de pacotes que o pip baixa.
+
+### Servidor
+
+- Endpoint **`/v1/live`** (WebSocket): frames binários com PCM bruto de entrada,
+  mensagens JSON com segmentos de saída. Autenticação checada **antes** do
+  `accept()` (`HTTPException` não vira resposta HTTP depois do handshake).
+- Recusa a sessão ao vivo quando não há VRAM livre, em vez de competir em silêncio
+  com um passe em lote.
+- Variáveis novas: `ALEX_TRANSCRITOR_HF_TOKEN`, `PYANNOTE_METRICS_ENABLED`,
+  `ALEX_TRANSCRITOR_DIARIZE_TIMEOUT_SECONDS`, `MPLCONFIGDIR`.
+- `ReadWritePaths` da unidade systemd ampliado para `~/.cache/huggingface` (download do
+  modelo de diarização) e `~/.cache/matplotlib` (dependência transitiva do pyannote).
+
+### Arquitetura
+
+- **`live_windowing.py`** (novo): janelamento e deduplicação por sobreposição, puros —
+  sem Qt e sem motor. Reaproveitado pelo cliente e pelo servidor, que não podem depender
+  um do outro (o servidor é headless e não pode ganhar PyQt6 só por compartilhar a
+  matemática).
+- **`live.py`** (motor local), **`live_remote.py`** (cliente WebSocket) e
+  **`live_server.py`** (motor no servidor) têm a mesma interface de sinais, então trocar
+  de motor não muda nada em `main_window.py` nem no painel.
+- Leitura do pipe sempre em thread própria, separada da transcrição/rede: o ffmpeg nunca
+  pode ficar esperando um consumidor lento.
+
+### Testes
+
+- **298 testes**, incluindo o endpoint WebSocket (`TestClient`), o algoritmo de junção da
+  diarização com dados sintéticos, e regressões dedicadas para cada defeito da tabela acima.
+- Verificação de ponta a ponta com **servidor uvicorn real e cliente real**, pipe
+  alimentado em tempo real e carga de modelo lenta simulada: 6 janelas enviadas,
+  6 segmentos recebidos, zero descarte.
+
+---
+
 ## [4.0.0] — 2026-08-10
 
 ### Transcrição remota privada

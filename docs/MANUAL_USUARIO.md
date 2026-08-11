@@ -91,6 +91,9 @@ linha de comando nem em arquivo versionado.
 | **Onde transcrever** | Escolha `Servidor privado via Tailscale` para usar a RX 9070 XT. |
 | **Servidor** | No ambiente configurado: `http://100.84.64.122:8300`. |
 | **Token** | Cole o token privado fornecido pelo administrador. Ele é armazenado no config `0600`. |
+| **Identificar quem falou** | Marca cada trecho do texto final com `Pessoa 1`, `Pessoa 2`... Só funciona no servidor e aumenta o tempo de processamento. Ver [Quem falou](#quem-falou-diarização). |
+| **Mostrar transcrição em tempo real** | Abre um painel que mostra o texto durante a gravação. Ver [Transcrição ao vivo](#transcrição-ao-vivo). |
+| **Modelo ao vivo** | Só usado quando a transcrição ao vivo roda **neste computador** (modo local). No modo servidor, quem escolhe o modelo é o servidor. |
 
 ### Aba Vocabulário — a que mais reduz erro
 
@@ -137,6 +140,56 @@ Você pode continuar usando o computador enquanto a transcrição roda.
 
 No modo remoto, mantenha o Tailscale conectado até o texto aparecer. Se a conexão cair,
 o áudio original continua salvo no notebook; uma nova tentativa pode ser feita depois.
+
+---
+
+## Transcrição ao vivo
+
+Com **Mostrar transcrição em tempo real** marcado, aparece um painel durante a gravação
+com o texto sendo transcrito. Serve para acompanhar a reunião, não para substituir o
+arquivo final — o texto salvo continua vindo da transcrição completa, que é mais precisa.
+
+**O que esperar, de verdade:** o texto aparece em **blocos, a cada ~2 segundos**, com
+mais alguns segundos de atraso. Não é legenda instantânea palavra a palavra como no
+Google Meet: o Whisper precisa de alguns segundos de áudio antes de conseguir transcrever
+qualquer coisa. Em fala corrida, blocos podem sair fragmentados.
+
+Onde o processamento acontece depende da opção **Onde transcrever**:
+
+| Modo | Onde roda | Observação |
+|---|---|---|
+| Servidor privado | RX 9070 XT do servidor | Recomendado. O áudio é enviado pela Tailscale enquanto grava |
+| Neste computador | CPU local | Precisa do pacote opcional (`requirements-live.txt`). Bem mais lento em hardware modesto |
+
+Enquanto conecta, o painel mostra `Conectando ao servidor...` e depois
+`Preparando o modelo no servidor...`. Na **primeira** gravação após uma atualização do
+servidor, essa preparação pode demorar mais, porque o modelo é baixado uma vez.
+
+Se algo falhar (pacote ausente, servidor fora do ar, rede caindo), o painel mostra o
+motivo e **a gravação continua normalmente** — a transcrição final não é afetada.
+
+---
+
+## Quem falou (diarização)
+
+Com **Identificar quem falou** marcado, o texto final sai separado por locutor:
+
+```
+Pessoa 1: bom dia, vamos começar pelo relatório
+
+Pessoa 2: eu atualizei os números ontem à noite
+```
+
+Pontos importantes:
+
+- **Só funciona no modo servidor.** No modo local a opção fica desabilitada.
+- Os rótulos são **genéricos**. O modelo separa vozes, mas não sabe nomes — `Pessoa 1` é
+  simplesmente quem falou primeiro. Renomeie manualmente se quiser.
+- **Aumenta o tempo de processamento**, porque é uma segunda passada sobre o áudio.
+- Só vale a pena em gravações com mais de uma pessoa. Numa gravação de voz única, todo
+  o texto sai como `Pessoa 1`.
+- Se a diarização falhar por qualquer motivo, **você recebe a transcrição normal** com um
+  aviso, em vez de perder o trabalho.
 
 ---
 

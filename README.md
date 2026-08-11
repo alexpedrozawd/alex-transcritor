@@ -13,6 +13,11 @@ A lightweight Linux desktop app for **automatic audio recording and transcriptio
 - Accepts a **custom vocabulary** so proper nouns and jargon come out right
 - Applies user-defined find/replace corrections to the final text
 - Shows live progress and never overwrites an existing recording
+- Optional **live transcription panel** — text appears in ~2 s blocks while you record,
+  processed either on the GPU server or locally on CPU (not word-by-word captioning:
+  Whisper decodes in windows, so expect a few seconds of lag)
+- Optional **speaker diarization** on the server pass, labelling the final transcript
+  with generic `Pessoa 1` / `Pessoa 2` turns via [pyannote.audio](https://github.com/pyannote/pyannote-audio)
 
 ## Accuracy
 
@@ -116,7 +121,15 @@ unloads Whisper after each job. See the developer manual for deployment and roll
 In local mode, audio never leaves the computer. In remote mode, it travels only through
 the encrypted Tailscale connection to the configured private server, is deleted there
 after processing, and is never sent to a cloud transcription API. Configuration and
-error logs are written with owner-only permissions.
+error logs are written with owner-only permissions. Live transcription follows the same
+rule: audio is streamed over the same Tailscale link, never to a third party.
+
+**One caveat to "no API keys", and it only applies to speaker diarization:** the
+`pyannote.audio` models are gated on Hugging Face, so enabling that optional feature
+requires a read token and a one-time model download on the server. That library also
+ships **telemetry enabled by default** — the server sets `PYANNOTE_METRICS_ENABLED=false`
+to turn it off, which is why that variable is mandatory rather than optional. Everything
+else — recording, transcription, live panel — needs no account and no key.
 
 ## License
 

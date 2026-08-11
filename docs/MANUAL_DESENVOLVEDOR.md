@@ -34,12 +34,18 @@ alex-transcritor/
 │   ├── hardware.py               ← detecção de GPU e escolha cuda/cpu
 │   ├── worker.py                 ← WhisperThread (QThread)
 │   ├── remote.py                 ← RemoteWhisperThread (cliente HTTP)
-│   ├── server.py                 ← API privada e fila de GPU
+│   ├── server.py                 ← API privada, fila de GPU e WebSocket ao vivo
+│   ├── diarize.py                ← pyannote + junção com o texto (sem Qt)
+│   ├── live_windowing.py         ← janelamento/overlap puro (sem Qt, sem motor)
+│   ├── live.py                   ← LiveTranscriber: motor ao vivo local (faster-whisper)
+│   ├── live_remote.py            ← RemoteLiveTranscriber: streaming por WebSocket
+│   ├── live_server.py            ← motor ao vivo do servidor (openai-whisper/ROCm)
 │   └── ui/
 │       ├── styles.py             ← folhas de estilo (STYLE, DIALOG_STYLE)
 │       ├── settings_dialog.py    ← QDialog com abas Áudio/Transcrição/Vocabulário
+│       ├── live_panel.py         ← painel da transcrição ao vivo
 │       └── main_window.py        ← QMainWindow principal
-├── tests/                        ← pytest (214 testes)
+├── tests/                        ← pytest (298 testes)
 ├── assets/icon.png
 ├── scripts/create_icon.py
 ├── requirements.txt
@@ -72,7 +78,7 @@ whisper_bin() -> str           # venv → irmão do interpretador → PATH
 Constrói comandos do ffmpeg; não executa gravação.
 
 ```python
-record_command(output_path, monitor, mic, audio_format) -> list[str]
+record_command(output_path, monitor, mic, audio_format, live_pcm=False) -> list[str]
 gain_command(source, target, gain_db) -> list[str]
 peak_db(path) -> float | None          # via volumedetect
 needed_gain_db(path) -> float          # 0 quando não compensa amplificar
@@ -82,6 +88,8 @@ unique_path(dir, stem, suffix) -> Path # nunca sobrescreve
 
 Informar `monitor` e `mic` juntos gera um `-filter_complex amix=...`, misturando as duas fontes numa faixa só.
 
+`live_pcm=True` acrescenta uma **segunda saída** ao mesmo comando — PCM s16le em `pipe:1`, para a transcrição ao vivo — sem alterar a saída principal. Com duas fontes é preciso `asplit` e `-map` explícito: a saída de um filtro só pode ser consumida uma vez, então o mix precisa ser duplicado. Com `live_pcm=False` (padrão) o comando é byte-idêntico ao anterior, e há teste de regressão garantindo isso.
+
 ### `hardware.py`
 
 ```python
@@ -90,6 +98,56 @@ pick_device(model, preference="auto") -> str # "cuda" ou "cpu"
 ```
 
 Consultar `nvidia-smi` em vez de `torch.cuda` evita carregar o PyTorch (segundos e centenas de MB) só para decidir onde rodar.
+
+### `live_windowing.py`
+
+Janelamento e deduplicação puros — **sem Qt e sem motor de transcrição**.
+
+```python
+BYTES_PER_SECOND, WINDOW_S, OVERLAP_S, WINDOW_BYTES, ADVANCE_BYTES
+LiveSegment                                    # dataclass: text/start_s/end_s/is_final
+accumulate(buffer, chunk) -> (buffer, janela | None)
+should_emit(rel_end_s, is_first_window) -> bool
+```
+
+Existe separado de `live.py` por um motivo concreto: `live.py` importa PyQt6, e o servidor é headless. Sem essa separação, reaproveitar a matemática no servidor arrastaria Qt para dentro dele.
+
+A sobreposição serve só como contexto acústico da decodificação — o texto dela já foi emitido pela janela anterior e é descartado por `should_emit`, nunca reemitido.
+
+### `live.py`, `live_remote.py`, `live_server.py`
+
+Três motores ao vivo com a **mesma interface de sinais** (`segment`, `failed`), então trocar de motor não muda nada em `main_window.py` nem no painel:
+
+| Módulo | Onde roda | Motor |
+|---|---|---|
+| `live.py` (`LiveTranscriber`) | cliente, CPU | `faster-whisper`, dependência opcional |
+| `live_remote.py` (`RemoteLiveTranscriber`) | cliente → rede | envia PCM por WebSocket, recebe segmentos |
+| `live_server.py` | servidor, GPU ROCm | `openai-whisper` via API Python |
+
+`main_window._start_live_transcriber()` escolhe pelo mesmo `transcription_backend` do passe final — sem opção separada na UI.
+
+**Por que o servidor não usa `faster-whisper`:** o CTranslate2 por trás dele só ganhou suporte ROCm recentemente, e o repositório oficial da AMD não tem release publicado. O `openai-whisper` já roda validado nessa GPU pelo passe em lote.
+
+#### Armadilhas que já causaram defeito em produção
+
+Todas encontradas testando de verdade, nenhuma apareceu na suíte antes:
+
+1. **Nunca deixar a leitura do pipe esperar a transcrição.** Se o consumidor do `stdout` do ffmpeg parar para transcrever, o buffer do pipe enche e o **ffmpeg trava no `write()`** — a gravação inteira para, não só o painel. Por isso a leitura tem sempre thread própria, empilhando numa fila.
+2. **Nunca deixar `recv()` bloquear o envio.** Mesma classe de problema no cliente WebSocket: `settimeout()` vale para o socket inteiro. Com envio e recepção no mesmo loop, cada volta esperava o timeout por uma mensagem inexistente e o áudio era descartado por backlog. A recepção tem thread própria (`websocket-client` usa locks separados para envio e leitura com `enable_multithread`, o padrão).
+3. **Limitar o acúmulo.** Sem teto, uma transcrição mais lenta que o tempo real nunca alcança o presente e o encerramento fica minutos processando áudio que já não serve (`MAX_QUEUED_CHUNKS`).
+4. **Segurar referência à `QThread` até `finished`.** Checar `isRunning()` antes de conectar a limpeza tem corrida: a thread pode terminar no meio, o sinal se perde, o GC coleta o wrapper com a thread viva e o Qt aborta o processo (`QThread: Destroyed while thread is still running`). Ver `MainWindow._retiring_threads`.
+5. **Não bloquear a thread da UI no encerramento.** `wait()` em `_stop_live_transcriber()` congela a interface ao clicar Parar.
+
+### `diarize.py`
+
+```python
+run_pipeline(audio_path, hf_token, device="cuda") -> list[(start, end, speaker)]
+merge_with_transcript(segments, turns) -> str   # função pura
+```
+
+`merge_with_transcript` casa cada segmento do Whisper com o turno de **maior sobreposição temporal**; segmento sem turno algum herda o locutor anterior. Os IDs do pyannote (`SPEAKER_00`...) são arbitrários, então viram `Pessoa N` pela ordem de **primeira aparição**. É pura e testada com dados sintéticos, sem GPU nem modelo.
+
+`run_pipeline` pré-carrega o áudio com `soundfile` e passa um waveform, em vez do caminho do arquivo: o carregamento nativo do pyannote depende do `torchcodec`, que espera bibliotecas CUDA e não carrega neste ROCm.
 
 ---
 
@@ -298,3 +356,35 @@ bash uninstall-server.sh
 ```
 
 Remover `.server-env` e o cache do modelo é opcional e deve ser uma decisão separada.
+
+### Endpoint `/v1/live` (WebSocket)
+
+Transcrição ao vivo processada no servidor. `uvicorn[standard]` já traz `websockets` — não há dependência nova do lado servidor.
+
+```
+cliente → servidor   JSON de abertura: {"language": "pt", "model": "small"}
+servidor → cliente   {"status": "ready"}          ← depois de carregar o modelo
+cliente → servidor   frames BINÁRIOS: PCM s16le 16 kHz mono
+servidor → cliente   {"text", "start_s", "end_s", "is_final"}   por segmento
+servidor → cliente   {"error": "..."}             falha não fatal
+```
+
+Detalhes que não são acidentais:
+
+- **Autenticação antes do `accept()`.** `HTTPException` não vira resposta HTTP depois do handshake WebSocket, então a checagem é manual e fecha a conexão com código próprio (`4401` token/origem, `4409` sem VRAM) em vez de usar `Depends(authenticate)`.
+- **`ready` antes do áudio.** Carregar o modelo (na primeira vez, baixando os pesos) leva tempo; sem essa confirmação o cliente mandaria áudio que só seria descartado, e a sessão começaria surda.
+- **Recusa quando não há VRAM livre**, em vez de competir em silêncio com um passe em lote (`MIN_FREE_VRAM_GB`, mesma constante da fila).
+- Inferência e carga de modelo vão para `asyncio.to_thread` — são bloqueantes e travariam o event loop.
+
+### Variáveis de ambiente do servidor
+
+Além de `ALEX_TRANSCRITOR_TOKEN`, `ALEX_TRANSCRITOR_ALLOWED_IP` e `ALEX_TRANSCRITOR_WHISPER_BIN`:
+
+| Variável | Para quê |
+|---|---|
+| `ALEX_TRANSCRITOR_HF_TOKEN` | Token do Hugging Face para os modelos de diarização (têm acesso restrito). **Não é validado no startup**: é feature opcional e não pode derrubar a transcrição comum |
+| `PYANNOTE_METRICS_ENABLED=false` | **Obrigatório.** `pyannote.audio` 4.x tem telemetria OpenTelemetry ligada por padrão, enviando dados a cada uso. Só desliga por variável lida antes do import |
+| `ALEX_TRANSCRITOR_DIARIZE_TIMEOUT_SECONDS` | Teto da diarização (padrão 1800). O pyannote não expõe progresso incremental como o stderr do whisper, então não dá para reaproveitar o loop de `PROGRESS_RE` |
+| `MPLCONFIGDIR` | `matplotlib` (dependência transitiva do pyannote) tenta escrever em `~/.config` e o sandbox da unidade bloqueia |
+
+A unidade systemd usa `ProtectHome=read-only`; qualquer cache novo precisa entrar em `ReadWritePaths` — hoje `~/.cache/whisper`, `~/.cache/miopen`, `~/.cache/huggingface` e `~/.cache/matplotlib`. Sem isso a falha é silenciosa ou confusa (download que "não acontece").
