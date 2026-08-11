@@ -1,6 +1,9 @@
 """Testes do LiveTranscriber e das funções puras de janelamento."""
 
 import io
+import os
+import threading
+import time
 
 import pytest
 
@@ -88,3 +91,57 @@ def test_stop_before_start_makes_run_return_immediately(qtbot, monkeypatch):
     transcriber.stop()
     transcriber.start()
     assert transcriber.wait(2000)
+
+
+# ── Regressão: leitura do pipe não pode esperar a transcrição ─────────────────
+
+class _SlowFakeModel:
+    """Simula um modelo lento o bastante para nunca acompanhar tempo real."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    def transcribe(self, audio, **kwargs):
+        time.sleep(0.5)
+        return [], None
+
+
+def test_pipe_is_drained_without_waiting_for_slow_transcription(qtbot, monkeypatch):
+    """Reproduz o bug relatado em uso real: se a leitura do pipe esperasse a
+    transcrição terminar, o ffmpeg do outro lado travaria no write() assim
+    que o buffer do pipe do SO enchesse (~64 KB) — travando a GRAVAÇÃO
+    inteira, não só o painel ao vivo, porque é o mesmo processo ffmpeg
+    escrevendo o arquivo principal e o pipe ao mesmo tempo.
+    """
+    monkeypatch.setattr(live, "WhisperModel", _SlowFakeModel)
+
+    read_fd, write_fd = os.pipe()
+    stdout = os.fdopen(read_fd, "rb")
+
+    # Bem mais que o buffer padrão de um pipe (64 KB no Linux) e mais do que
+    # dá para transcrever a 0,5s por janela dentro do prazo do teste.
+    payload = b"\x00" * (live.WINDOW_BYTES * 4)
+    write_done = threading.Event()
+
+    def _write_like_ffmpeg():
+        with os.fdopen(write_fd, "wb") as w:
+            w.write(payload)
+        write_done.set()
+
+    writer = threading.Thread(target=_write_like_ffmpeg, daemon=True)
+
+    transcriber = live.LiveTranscriber(stdout)
+    transcriber.start()
+    writer.start()
+
+    # Com a leitura desacoplada, a escrita termina quase de imediato — ela só
+    # depende do leitor drenar o pipe, nunca da transcrição. Com o bug antigo
+    # (leitura e transcrição na mesma thread/loop), a escrita ficaria presa
+    # esperando ciclos de "ler + dormir 0,5s", levando vários segundos.
+    assert write_done.wait(timeout=1.5), (
+        "escrita no pipe travou — leitura ficou acoplada à velocidade da transcrição"
+    )
+
+    transcriber.stop()
+    assert transcriber.wait(5000)
+    writer.join(timeout=2)

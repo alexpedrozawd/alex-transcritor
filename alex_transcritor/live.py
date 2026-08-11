@@ -9,6 +9,8 @@ do motor é protegido e toda a ``run()`` está isolada em try/except.
 
 from __future__ import annotations
 
+import queue
+import threading
 from dataclasses import dataclass
 from typing import BinaryIO
 
@@ -91,9 +93,12 @@ class LiveTranscriber(QThread):
         self.device = device
         self.language = language
         self._stopped = False
+        # Fila entre a leitura do pipe e a transcrição — ver run()/_read_loop.
+        self._chunks: queue.Queue[bytes | None] = queue.Queue()
 
     def stop(self) -> None:
         self._stopped = True
+        self._chunks.put(None)  # desbloqueia get() se estiver esperando dado
 
     def run(self) -> None:
         if WhisperModel is None:
@@ -101,10 +106,27 @@ class LiveTranscriber(QThread):
                 "faster-whisper não instalado — veja requirements-live.txt"
             )
             return
+
+        # Thread só de leitura, independente da transcrição: se a leitura
+        # esperasse cada model.transcribe() terminar (como era antes), o
+        # buffer do pipe do SO enche em ~2s de áudio não lido e o ffmpeg
+        # trava no write() — não só o painel ao vivo para, a GRAVAÇÃO
+        # inteira trava, porque é o mesmo processo ffmpeg escrevendo os dois
+        # arquivos. Essa thread garante que o pipe é sempre drenado, não
+        # importa quão lenta esteja a transcrição.
+        reader = threading.Thread(target=self._read_loop, daemon=True)
+        reader.start()
+
+        if self._stopped:
+            reader.join(timeout=5)
+            return
+
         try:
             model = WhisperModel(self.model_size, device=self.device, compute_type="int8")
         except Exception as exc:  # rede de segurança: modelo não deve matar a thread calado
             self.failed.emit(f"Não foi possível carregar o modelo ao vivo: {exc}")
+            self.stop()
+            reader.join(timeout=5)
             return
 
         buffer = b""
@@ -113,11 +135,9 @@ class LiveTranscriber(QThread):
         already_failed = False
 
         while not self._stopped:
-            chunk = self._read_chunk()
-            if chunk is None:
+            chunk = self._chunks.get()
+            if chunk is None:  # EOF do ffmpeg, ou stop() pedindo para sair
                 break
-            if not chunk:
-                continue
             buffer, window = accumulate(buffer, chunk)
             if window is None:
                 continue
@@ -130,14 +150,23 @@ class LiveTranscriber(QThread):
             elapsed_s += ADVANCE_BYTES / BYTES_PER_SECOND
             first_window = False
 
-    def _read_chunk(self) -> bytes | None:
+        self._stopped = True
+        reader.join(timeout=5)
+
+    def _read_loop(self) -> None:
+        """Só drena o pipe, o mais rápido possível — nunca espera a transcrição."""
         if self._stdout is None:
-            return None
-        try:
-            data = self._stdout.read(READ_CHUNK_BYTES)
-        except (OSError, ValueError):
-            return None
-        return data or None
+            self._chunks.put(None)
+            return
+        while True:
+            try:
+                data = self._stdout.read(READ_CHUNK_BYTES)
+            except (OSError, ValueError):
+                data = None
+            if not data:
+                self._chunks.put(None)
+                return
+            self._chunks.put(data)
 
     def _transcribe_window(
         self, model, window: bytes, window_start_s: float, is_first_window: bool
