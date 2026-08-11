@@ -25,14 +25,24 @@ def run_pipeline(audio_path: str, hf_token: str, device: str = "cuda") -> list[t
 
     Levanta em qualquer falha (pyannote ausente, token inválido, modelo com
     acesso negado, OOM) — o chamador trata isso como best-effort, nunca fatal.
+
+    O áudio é pré-carregado via ``soundfile`` e passado como waveform em vez
+    do caminho do arquivo: o carregamento nativo do pyannote (via torchaudio)
+    depende do `torchcodec`, que nesta versão exige bibliotecas CUDA
+    (`libnvrtc`) ausentes num sistema ROCm — soundfile não tem essa
+    dependência e já é usado internamente pelo próprio pyannote.
     """
     if Pipeline is None:
         raise RuntimeError("pyannote.audio não está instalado no servidor.")
+    import soundfile as sf
     import torch
 
-    pipeline = Pipeline.from_pretrained(PIPELINE_ID, use_auth_token=hf_token)
+    pipeline = Pipeline.from_pretrained(PIPELINE_ID, token=hf_token)
     pipeline.to(torch.device(device))
-    annotation = pipeline(audio_path)
+
+    data, sample_rate = sf.read(audio_path, dtype="float32", always_2d=True)
+    waveform = torch.from_numpy(data.T)  # (tempo, canal) -> (canal, tempo)
+    annotation = pipeline({"waveform": waveform, "sample_rate": sample_rate})
     return [
         (segment.start, segment.end, speaker)
         for segment, _, speaker in annotation.itertracks(yield_label=True)

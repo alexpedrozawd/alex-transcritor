@@ -12,6 +12,58 @@ def test_run_pipeline_raises_clearly_when_pyannote_missing(monkeypatch):
         diarize.run_pipeline("/tmp/audio.flac", "token")
 
 
+def test_run_pipeline_loads_waveform_instead_of_file_path(monkeypatch, tmp_path):
+    """Regressão: o pyannote.audio 4.x delega a decodificação nativa ao
+    torchcodec, que não carrega em sistemas ROCm (falta lib CUDA). run_pipeline
+    tem que pré-carregar o áudio via soundfile e passar um dict de waveform —
+    nunca o caminho do arquivo direto."""
+    sf = pytest.importorskip("soundfile")
+    torch = pytest.importorskip("torch")
+    import numpy as np
+
+    audio_path = tmp_path / "audio.wav"
+    sf.write(str(audio_path), np.zeros(1600, dtype="float32"), 16000)
+
+    calls = {}
+
+    class FakeSegment:
+        def __init__(self, start, end):
+            self.start, self.end = start, end
+
+    class FakeAnnotation:
+        def itertracks(self, yield_label=True):
+            yield FakeSegment(0.0, 1.0), None, "SPEAKER_00"
+
+    class FakePipeline:
+        def to(self, device):
+            calls["device"] = device
+            return self
+
+        def __call__(self, file):
+            calls["file"] = file
+            return FakeAnnotation()
+
+    class FakePipelineClass:
+        @staticmethod
+        def from_pretrained(model_id, token):
+            calls["model_id"] = model_id
+            calls["token"] = token
+            return FakePipeline()
+
+    monkeypatch.setattr(diarize, "Pipeline", FakePipelineClass)
+    turns = diarize.run_pipeline(str(audio_path), "hf_token", device="cpu")
+
+    assert turns == [(0.0, 1.0, "SPEAKER_00")]
+    assert calls["model_id"] == diarize.PIPELINE_ID
+    assert calls["token"] == "hf_token"
+    assert str(calls["device"]) == "cpu"
+    # nunca o caminho do arquivo — sempre o waveform pré-carregado
+    assert isinstance(calls["file"], dict)
+    assert calls["file"]["sample_rate"] == 16000
+    assert isinstance(calls["file"]["waveform"], torch.Tensor)
+    assert calls["file"]["waveform"].shape == (1, 1600)
+
+
 def test_single_speaker_throughout():
     segments = [{"start": 0.0, "end": 1.0, "text": "oi"}, {"start": 1.0, "end": 2.0, "text": "tudo bem"}]
     turns = [(0.0, 2.0, "SPEAKER_00")]

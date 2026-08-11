@@ -4,13 +4,20 @@ fastapi==0.141.1
 uvicorn[standard]==0.52.1
 python-multipart==0.0.32
 
-# Diarização opcional (identificar quem fala). 3.3.2, não a linha 4.x mais
-# recente: a 4.0.7 depende de pyannoteai-sdk (API paga na nuvem), o que
-# contradiz o "100% offline" deste app. A 3.3.2 não tem essa dependência.
+# Diarização opcional (identificar quem fala).
 #
-# ATENÇÃO na instalação: este servidor já tem um torch ROCm instalado à
-# parte (ver comentário acima). `pip install pyannote.audio` normal pode
-# puxar torch/torchaudio CUDA/CPU como dependência transitiva e sobrescrever
-# o build ROCm — instalar com --no-deps e resolver as demais dependências à
-# mão, ou validar num venv descartável antes de aplicar em produção.
-pyannote.audio==3.3.2
+# Testado neste servidor (torch 2.11.0+rocm7.13.0): a linha 3.x (3.3.2, 3.4.0)
+# não roda — usa `torchaudio.AudioMetaData`, removido no torchaudio atual.
+# A 4.0.7 corrige isso, mas traz `pyannoteai-sdk` com telemetria OpenTelemetry
+# LIGADA POR PADRÃO (manda dados para otel.pyannote.ai a cada uso). Ela só
+# desliga de fato via variável de ambiente lida ANTES do import — por isso
+# `PYANNOTE_METRICS_ENABLED=false` é OBRIGATÓRIO no server.env, não opcional.
+#
+# Também: a nova dependência `torchcodec` não carrega neste sistema ROCm
+# (espera bibliotecas CUDA). Não precisa consertar — alex_transcritor/diarize.py
+# já contorna isso pré-carregando o áudio via `soundfile` em vez de deixar o
+# pyannote decodificar o arquivo sozinho.
+#
+# pip install já confirmado seguro quanto ao torch/torchaudio ROCm: nenhuma
+# das duas aparece na lista de pacotes que a instalação baixa/atualiza.
+pyannote.audio==4.0.7
