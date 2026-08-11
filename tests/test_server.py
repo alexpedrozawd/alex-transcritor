@@ -2,9 +2,11 @@ import os
 import stat
 import time
 
+import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
-from alex_transcritor import server
+from alex_transcritor import live_server, server
 
 
 TOKEN = "a" * 32
@@ -198,3 +200,70 @@ def test_diarize_defaults_to_false(monkeypatch, tmp_path):
         assert job["diarize"] is False
         result = client.get(f"/v1/jobs/{job['id']}/result", headers=_headers())
         assert result.text == "texto remoto"
+
+
+# ── Transcrição ao vivo (WebSocket) ─────────────────────────────────────────────
+
+def _live_pcm_window():
+    from alex_transcritor.live_windowing import WINDOW_BYTES
+    return b"\x00" * WINDOW_BYTES
+
+
+def test_live_rejects_invalid_token_before_accepting(monkeypatch, tmp_path):
+    with _client(monkeypatch, tmp_path) as client:
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(
+                "/v1/live", headers={"Authorization": "Bearer errado"}
+            ) as ws:
+                ws.receive_json()
+        assert exc_info.value.code == 4401
+
+
+def test_live_rejects_when_no_vram_free(monkeypatch, tmp_path):
+    with _client(monkeypatch, tmp_path) as client:
+        monkeypatch.setattr(server, "_free_vram_gb", lambda: 0.5)
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect("/v1/live", headers=_headers()) as ws:
+                ws.receive_json()
+        assert exc_info.value.code == 4409
+
+
+def test_live_transcribes_a_window_and_returns_segment(monkeypatch, tmp_path):
+    monkeypatch.setattr(live_server, "load_model", lambda name: "fake-model")
+    monkeypatch.setattr(
+        live_server, "transcribe_window",
+        lambda model, window, language: [{"start": 0.0, "end": 1.0, "text": "ola mundo"}],
+    )
+    with _client(monkeypatch, tmp_path) as client:
+        with client.websocket_connect("/v1/live", headers=_headers()) as ws:
+            ws.send_json({"language": "pt", "model": "tiny"})
+            ws.send_bytes(_live_pcm_window())
+            message = ws.receive_json()
+    assert message == {"text": "ola mundo", "start_s": 0.0, "end_s": 1.0, "is_final": True}
+
+
+def test_live_model_load_failure_sends_error_and_closes(monkeypatch, tmp_path):
+    def _raise(name):
+        raise RuntimeError("GPU sem memória")
+
+    monkeypatch.setattr(live_server, "load_model", _raise)
+    with _client(monkeypatch, tmp_path) as client:
+        with client.websocket_connect("/v1/live", headers=_headers()) as ws:
+            ws.send_json({"language": "pt", "model": "tiny"})
+            message = ws.receive_json()
+            assert "GPU sem memória" in message["error"]
+
+
+def test_live_transcribe_failure_sends_error_but_keeps_session_open(monkeypatch, tmp_path):
+    monkeypatch.setattr(live_server, "load_model", lambda name: "fake-model")
+
+    def _raise(model, window, language):
+        raise RuntimeError("janela corrompida")
+
+    monkeypatch.setattr(live_server, "transcribe_window", _raise)
+    with _client(monkeypatch, tmp_path) as client:
+        with client.websocket_connect("/v1/live", headers=_headers()) as ws:
+            ws.send_json({"language": "pt", "model": "tiny"})
+            ws.send_bytes(_live_pcm_window())
+            message = ws.receive_json()
+    assert "janela corrompida" in message["error"]

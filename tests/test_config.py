@@ -72,10 +72,9 @@ def test_load_config_drops_unknown_keys(tmp_path):
 
 
 def test_load_config_rejects_unknown_live_enum_values(tmp_path):
-    (tmp_path / "config.json").write_text('{"live_model": "gpt-9", "live_device": "tpu"}')
+    (tmp_path / "config.json").write_text('{"live_model": "gpt-9"}')
     config = cfg.load_config()
     assert config["live_model"] == cfg.DEFAULTS["live_model"]
-    assert config["live_device"] == cfg.DEFAULTS["live_device"]
 
 
 def test_load_config_live_transcription_defaults_off():

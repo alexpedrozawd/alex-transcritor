@@ -37,9 +37,8 @@ DEFAULTS: dict = {
     "remote_url": "http://100.84.64.122:8300",
     REMOTE_TOKEN_KEY: "",
     "diarize_speakers": False,  # opt-in, remoto apenas — exige token HF configurado no servidor
-    "live_transcription": False,  # opt-in — exige faster-whisper instalado
-    "live_model": "tiny",         # o menor: em CPU, "small" nem com beam_size=1 acompanha em tempo real
-    "live_device": "cpu",         # usado só quando o passe final também é local (ver MainWindow._live_device)
+    "live_transcription": False,  # opt-in — remoto usa websocket-client; local exige faster-whisper
+    "live_model": "tiny",         # só vale para o motor local (CPU): o menor, "small" nem com beam_size=1 acompanha tempo real
 }
 
 
@@ -77,7 +76,6 @@ def _coerce_enums(config: dict) -> dict:
         ("model", WHISPER_MODELS),
         ("transcription_backend", TRANSCRIPTION_BACKENDS),
         ("live_model", WHISPER_MODELS),
-        ("live_device", DEVICES),
     ):
         if config[key] not in allowed:
             config[key] = DEFAULTS[key]

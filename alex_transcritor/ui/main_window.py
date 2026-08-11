@@ -24,6 +24,7 @@ from ..config import (
 from ..worker import WhisperThread
 from ..remote import RemoteWhisperThread
 from ..live import LiveTranscriber
+from ..live_remote import RemoteLiveTranscriber
 from .styles import STYLE
 from .settings_dialog import SettingsDialog
 from .live_panel import LivePanel
@@ -49,10 +50,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.recording_process: subprocess.Popen | None = None
         self.whisper_thread: WhisperThread | RemoteWhisperThread | None = None
-        self.live_transcriber: LiveTranscriber | None = None
+        self.live_transcriber: LiveTranscriber | RemoteLiveTranscriber | None = None
         # Threads de transcrição ao vivo em vias de encerrar, mas ainda não
         # confirmaram via `finished` — ver _stop_live_transcriber().
-        self._retiring_threads: list[LiveTranscriber] = []
+        self._retiring_threads: list[LiveTranscriber | RemoteLiveTranscriber] = []
         self.audio_path = ""
         self.txt_path = ""
         self.log_path = ""
@@ -411,32 +412,37 @@ class MainWindow(QMainWindow):
         # interface anuncia "gravando" enquanto nada é capturado.
         QTimer.singleShot(FFMPEG_CHECK_MS, self._verify_recording_started)
 
-    @staticmethod
-    def _live_device(config: dict) -> str:
-        """GPU local quando o passe final é remoto — a GPU fica ociosa a
-        gravação inteira nesse caso, sem risco de disputar VRAM com nada.
-        Só quando o passe final também é local (mesma GPU, mesma janela de
-        tempo na transição Parar → passe final) a transcrição ao vivo fica
-        em CPU, evitando a contenção que motivou essa restrição originalmente.
-        """
-        if config["transcription_backend"] == "remote":
-            return "cuda"
-        return config["live_device"]
-
     def _start_live_transcriber(self, config: dict) -> None:
-        """Best-effort: qualquer falha aqui só avisa no painel, nunca a gravação principal."""
+        """Best-effort: qualquer falha aqui só avisa no painel, nunca a gravação principal.
+
+        O motor é decidido pelo mesmo ``transcription_backend`` do passe
+        final: remoto processa no servidor (GPU forte, sem os problemas de
+        driver/biblioteca CUDA já vistos no notebook); local roda em CPU
+        aqui mesmo, único cenário em que a GPU local faria sentido, mas o
+        motor local (faster-whisper) só tem suporte real a CPU neste app —
+        ver histórico de `_live_device` removido, que tentava CUDA local e
+        não funcionou bem no hardware do usuário.
+        """
         self.live_panel.clear()
         self.live_panel.show()
         try:
             process = self.recording_process
             if process is None or process.stdout is None:
                 raise RuntimeError("saída de áudio ao vivo indisponível")
-            self.live_transcriber = LiveTranscriber(
-                process.stdout,
-                model_size=config["live_model"],
-                device=self._live_device(config),
-                language=config["language"],
-            )
+            if config["transcription_backend"] == "remote":
+                self.live_transcriber = RemoteLiveTranscriber(
+                    process.stdout,
+                    remote_url=config["remote_url"],
+                    token=config["remote_token"],
+                    language=config["language"],
+                )
+            else:
+                self.live_transcriber = LiveTranscriber(
+                    process.stdout,
+                    model_size=config["live_model"],
+                    device="cpu",
+                    language=config["language"],
+                )
             self.live_transcriber.segment.connect(self.live_panel.append_segment)
             self.live_transcriber.failed.connect(self.live_panel.show_unavailable)
             self.live_transcriber.start()
@@ -475,7 +481,7 @@ class MainWindow(QMainWindow):
             # uma thread finalizada não "volta a rodar", não há corrida.
             self._forget_retiring_thread(transcriber)
 
-    def _forget_retiring_thread(self, transcriber: LiveTranscriber) -> None:
+    def _forget_retiring_thread(self, transcriber: LiveTranscriber | RemoteLiveTranscriber) -> None:
         if transcriber in self._retiring_threads:
             self._retiring_threads.remove(transcriber)
         transcriber.deleteLater()

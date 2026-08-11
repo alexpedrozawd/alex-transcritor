@@ -1,3 +1,4 @@
 # Dependências de produção (versões testadas e fixadas)
 PyQt6==6.11.0
 requests==2.34.2
+websocket-client==1.9.0

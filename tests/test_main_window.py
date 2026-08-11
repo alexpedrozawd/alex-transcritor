@@ -68,6 +68,14 @@ def live_thread(monkeypatch):
     return fake
 
 
+@pytest.fixture
+def remote_live_thread(monkeypatch):
+    """Substitui o RemoteLiveTranscriber por um duplo — nunca conecta na rede de verdade."""
+    fake = MagicMock()
+    monkeypatch.setattr("alex_transcritor.ui.main_window.RemoteLiveTranscriber", fake)
+    return fake
+
+
 # ── _sanitize_filename ────────────────────────────────────────────────────────
 
 def test_sanitize_normal_name():
@@ -259,28 +267,34 @@ def test_start_recording_live_transcription_enabled_starts_engine(
     assert not window.live_panel.isHidden()
 
 
-def test_start_recording_live_transcription_uses_gpu_when_backend_is_remote(
-    window, popen, live_thread, tmp_path
+def test_start_recording_live_transcription_uses_remote_engine_when_backend_is_remote(
+    window, popen, live_thread, remote_live_thread, tmp_path
 ):
-    """A GPU local fica ociosa a gravação inteira quando o passe final é
-    remoto — sem risco de disputar VRAM, então a transcrição ao vivo pode
-    usá-la em vez de ficar restrita à CPU."""
-    cfg.update_config(live_transcription=True, transcription_backend="remote")
+    """Passe final remoto → transcrição ao vivo também processada no
+    servidor (streaming por WebSocket), não mais o motor local."""
+    cfg.update_config(
+        live_transcription=True, transcription_backend="remote",
+        remote_url="http://100.84.64.122:8300", remote_token="x" * 32,
+    )
     window.input_dir.setText(str(tmp_path))
     window._start_recording()
-    assert live_thread.call_args.kwargs["device"] == "cuda"
+    remote_live_thread.assert_called_once()
+    assert remote_live_thread.call_args.kwargs["remote_url"] == "http://100.84.64.122:8300"
+    assert remote_live_thread.call_args.kwargs["token"] == "x" * 32
+    live_thread.assert_not_called()
 
 
-def test_start_recording_live_transcription_stays_on_cpu_when_backend_is_local(
-    window, popen, live_thread, tmp_path
+def test_start_recording_live_transcription_stays_local_when_backend_is_local(
+    window, popen, live_thread, remote_live_thread, tmp_path
 ):
-    """Só quando o passe final também é local (mesma GPU) a transcrição ao
-    vivo continua restrita à CPU — é a única situação com risco real de
-    disputa de VRAM entre os dois motores."""
+    """Passe final local → transcrição ao vivo continua no motor local, em
+    CPU (único device com suporte real neste app para o motor local)."""
     cfg.update_config(live_transcription=True, transcription_backend="local")
     window.input_dir.setText(str(tmp_path))
     window._start_recording()
+    live_thread.assert_called_once()
     assert live_thread.call_args.kwargs["device"] == "cpu"
+    remote_live_thread.assert_not_called()
 
 
 def test_start_recording_live_transcriber_failure_does_not_block_recording(

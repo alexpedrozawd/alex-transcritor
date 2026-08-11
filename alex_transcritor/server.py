@@ -18,10 +18,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket
 from fastapi.responses import PlainTextResponse
 
-from . import __version__, audio, diarize
+from . import __version__, audio, diarize, live_server
 from .constants import WHISPER_MODELS
 
 MAX_UPLOAD_BYTES = int(os.environ.get("ALEX_TRANSCRITOR_MAX_UPLOAD_BYTES", 2 * 1024**3))
@@ -276,6 +276,15 @@ class JobManager:
         return diarize.merge_with_transcript(whisper_data["segments"], turns)
 
 
+def _ip_allowed(client_host: str | None, allowed_ip: str) -> bool:
+    return not allowed_ip or client_host == allowed_ip
+
+
+def _token_valid(headers, token: str) -> bool:
+    supplied = headers.get("Authorization", "")
+    return secrets.compare_digest(supplied, f"Bearer {token}")
+
+
 def _free_vram_gb() -> float:
     for device in sorted(Path("/sys/class/drm").glob("card*/device")):
         try:
@@ -306,10 +315,10 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Alex Transcritor Server", version=__version__, docs_url=None, redoc_url=None)
 
     def authenticate(request: Request) -> None:
-        if allowed_ip and (request.client is None or request.client.host != allowed_ip):
+        host = request.client.host if request.client else None
+        if not _ip_allowed(host, allowed_ip):
             raise HTTPException(status_code=403, detail="Origem não autorizada.")
-        supplied = request.headers.get("Authorization", "")
-        if not secrets.compare_digest(supplied, f"Bearer {token}"):
+        if not _token_valid(request.headers, token):
             raise HTTPException(status_code=401, detail="Token inválido.")
 
     @app.get("/health", dependencies=[Depends(authenticate)])
@@ -398,5 +407,69 @@ def create_app() -> FastAPI:
             manager.cancel(manager.get(job_id))
         except KeyError:
             raise HTTPException(status_code=404, detail="Trabalho não encontrado.") from None
+
+    @app.websocket("/v1/live")
+    async def live_transcription(websocket: WebSocket) -> None:
+        """Transcrição ao vivo processada aqui: cliente manda PCM bruto por
+        frame binário, servidor devolve segmentos por mensagem JSON. Não usa
+        ``Depends(authenticate)`` — HTTPException não tem como virar resposta
+        HTTP depois do handshake WS; a checagem é manual, fechando a conexão
+        antes de aceitar quando algo não bate.
+        """
+        host = websocket.client.host if websocket.client else None
+        if not _ip_allowed(host, allowed_ip) or not _token_valid(websocket.headers, token):
+            await websocket.close(code=4401)
+            return
+        if _free_vram_gb() < MIN_FREE_VRAM_GB:
+            await websocket.close(code=4409)
+            return
+
+        await websocket.accept()
+        try:
+            opening = await websocket.receive_json()
+        except Exception:
+            await websocket.close(code=4400)
+            return
+        language = opening.get("language", "pt") if isinstance(opening, dict) else "pt"
+        model_name = opening.get("model", "small") if isinstance(opening, dict) else "small"
+
+        try:
+            model = await asyncio.to_thread(live_server.load_model, model_name)
+        except Exception as exc:
+            await websocket.send_json({"error": f"Não foi possível carregar o modelo: {exc}"})
+            await websocket.close(code=1011)
+            return
+
+        buffer = b""
+        elapsed_s = 0.0
+        first_window = True
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+            data = message.get("bytes")
+            if not data:
+                continue
+            buffer, window = live_server.accumulate(buffer, data)
+            if window is None:
+                continue
+            try:
+                raw_segments = await asyncio.to_thread(
+                    live_server.transcribe_window, model, window, language
+                )
+            except Exception as exc:
+                await websocket.send_json({"error": str(exc)})
+                elapsed_s += live_server.ADVANCE_BYTES / live_server.BYTES_PER_SECOND
+                first_window = False
+                continue
+            for seg in live_server.segments_to_live_segments(raw_segments, elapsed_s, first_window):
+                await websocket.send_json({
+                    "text": seg.text,
+                    "start_s": seg.start_s,
+                    "end_s": seg.end_s,
+                    "is_final": seg.is_final,
+                })
+            elapsed_s += live_server.ADVANCE_BYTES / live_server.BYTES_PER_SECOND
+            first_window = False
 
     return app
