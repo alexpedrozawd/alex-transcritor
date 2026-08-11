@@ -274,24 +274,74 @@ def test_start_recording_live_transcriber_failure_does_not_block_recording(
     assert window.live_transcriber is None
 
 
-def test_stop_live_transcriber_never_blocks_the_gui_thread(window):
-    """Regressão: wait() aqui trava a UI até a janela em transcrição terminar
-    — reportado como "a interface congela" ao clicar Parar."""
+def test_stop_live_transcriber_never_blocks_and_holds_a_reference(window):
+    """Regressão dupla: wait() aqui travava a UI até a janela em transcrição
+    terminar (congelamento ao clicar Parar); e sem segurar uma referência
+    real até 'finished' disparar, o wrapper Python podia ser coletado
+    enquanto a thread ainda rodava de verdade — Qt aborta o processo com
+    "QThread: Destroyed while thread is still running" (crash real em uso)."""
     transcriber = MagicMock()
-    transcriber.isRunning.return_value = True
+    transcriber.isFinished.return_value = False
     window.live_transcriber = transcriber
     window._stop_live_transcriber()
     transcriber.wait.assert_not_called()
     transcriber.stop.assert_called_once()
-    transcriber.finished.connect.assert_called_once_with(transcriber.deleteLater)
+    assert transcriber in window._retiring_threads
+    transcriber.finished.connect.assert_called_once()
 
 
-def test_stop_live_transcriber_deletes_immediately_when_already_stopped(window):
+def test_finished_signal_releases_the_retiring_thread(window):
+    """Só depois que a thread confirma via `finished` que terminou de
+    verdade é que a referência é solta — nunca antes (checar isRunning()
+    antes de conectar tinha corrida: a thread podia terminar entre o cheque
+    e a conexão)."""
     transcriber = MagicMock()
-    transcriber.isRunning.return_value = False
+    transcriber.isFinished.return_value = False
     window.live_transcriber = transcriber
     window._stop_live_transcriber()
+    on_finished = transcriber.finished.connect.call_args.args[0]
+    on_finished()
+    assert transcriber not in window._retiring_threads
     transcriber.deleteLater.assert_called_once()
+
+
+def test_already_finished_thread_is_released_immediately(window):
+    """Se a thread já tinha terminado antes de conectarmos ao finished (o
+    sinal antigo não seria reemitido), a limpeza precisa acontecer na hora —
+    sem isso, a referência ficava presa para sempre em _retiring_threads."""
+    transcriber = MagicMock()
+    transcriber.isFinished.return_value = True
+    window.live_transcriber = transcriber
+    window._stop_live_transcriber()
+    assert transcriber not in window._retiring_threads
+    transcriber.deleteLater.assert_called_once()
+
+
+def test_stop_live_transcriber_survives_a_thread_that_finishes_immediately(qtbot, window, monkeypatch):
+    """Integração com uma LiveTranscriber real (não mockada): reproduz a
+    corrida do bug de verdade — parar bem no instante em que a thread já
+    terminou (ou está terminando) não pode deixar o wrapper sem nenhuma
+    referência Python enquanto o Qt ainda considera a thread viva."""
+    import io
+
+    from alex_transcritor import live as live_module
+
+    class _InstantModel:
+        def __init__(self, *a, **k):
+            pass
+
+        def transcribe(self, audio, **kwargs):
+            return [], None
+
+    monkeypatch.setattr(live_module, "WhisperModel", _InstantModel)
+    transcriber = live_module.LiveTranscriber(io.BytesIO(b""))  # EOF imediato
+    window.live_transcriber = transcriber
+    transcriber.start()
+    # Dá tempo da thread real terminar sozinha antes de mandarmos parar —
+    # é exatamente a janela de corrida que causava o crash.
+    assert transcriber.wait(2000)
+    window._stop_live_transcriber()
+    qtbot.waitUntil(lambda: transcriber not in window._retiring_threads, timeout=2000)
 
 
 def test_start_recording_uses_configured_audio_format(window, popen, tmp_path):

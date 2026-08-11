@@ -50,6 +50,9 @@ class MainWindow(QMainWindow):
         self.recording_process: subprocess.Popen | None = None
         self.whisper_thread: WhisperThread | RemoteWhisperThread | None = None
         self.live_transcriber: LiveTranscriber | None = None
+        # Threads de transcrição ao vivo em vias de encerrar, mas ainda não
+        # confirmaram via `finished` — ver _stop_live_transcriber().
+        self._retiring_threads: list[LiveTranscriber] = []
         self.audio_path = ""
         self.txt_path = ""
         self.log_path = ""
@@ -435,18 +438,35 @@ class MainWindow(QMainWindow):
         ``wait()`` aqui travaria a thread da interface até a janela de
         transcrição em andamento terminar — perceptível como um
         congelamento ao clicar "Parar". A thread termina sozinha (a
-        transcrição atual conclui, o loop vê ``_stopped`` e sai) e
-        ``deleteLater`` só roda quando ela de fato emitir ``finished``.
+        transcrição atual conclui, o loop vê ``_stopped`` e sai).
+
+        A referência em ``_retiring_threads`` é o que evita o crash "QThread:
+        Destroyed while thread is still running": checar ``isRunning()``
+        antes de decidir manter uma referência tem corrida — a thread pode
+        terminar entre o cheque e a conexão do sinal, perdendo o ``finished``
+        e deixando o wrapper Python sem nada que o segure enquanto o SO ainda
+        não encerrou a thread de verdade. Manter a referência incondicional
+        aqui, e só soltá-la quando ``finished`` realmente disparar, elimina
+        essa corrida.
         """
         transcriber = self.live_transcriber
         self.live_transcriber = None
         if transcriber is None:
             return
         transcriber.stop()
-        if transcriber.isRunning():
-            transcriber.finished.connect(transcriber.deleteLater)
-        else:
-            transcriber.deleteLater()
+        self._retiring_threads.append(transcriber)
+        transcriber.finished.connect(lambda t=transcriber: self._forget_retiring_thread(t))
+        if transcriber.isFinished():
+            # Já tinha terminado antes desta conexão — o finished antigo não
+            # é reemitido para quem conecta depois, então libera aqui mesmo.
+            # isFinished() aqui é seguro (ao contrário de isRunning() antes):
+            # uma thread finalizada não "volta a rodar", não há corrida.
+            self._forget_retiring_thread(transcriber)
+
+    def _forget_retiring_thread(self, transcriber: LiveTranscriber) -> None:
+        if transcriber in self._retiring_threads:
+            self._retiring_threads.remove(transcriber)
+        transcriber.deleteLater()
 
     def _verify_recording_started(self) -> None:
         process = self.recording_process
