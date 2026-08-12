@@ -42,7 +42,17 @@ def run_pipeline(audio_path: str, hf_token: str, device: str = "cuda") -> list[t
 
     data, sample_rate = sf.read(audio_path, dtype="float32", always_2d=True)
     waveform = torch.from_numpy(data.T)  # (tempo, canal) -> (canal, tempo)
-    annotation = pipeline({"waveform": waveform, "sample_rate": sample_rate})
+    return turns_from_output(pipeline({"waveform": waveform, "sample_rate": sample_rate}))
+
+
+def turns_from_output(output) -> list[tuple[float, float, str]]:
+    """Extrai ``(início, fim, locutor)`` do resultado do pipeline.
+
+    A 4.x devolve um ``DiarizeOutput`` (com o ``Annotation`` em
+    ``speaker_diarization``); a 3.x devolvia o ``Annotation`` direto. Aceitar
+    os dois evita quebrar se a versão do servidor mudar.
+    """
+    annotation = getattr(output, "speaker_diarization", output)
     return [
         (segment.start, segment.end, speaker)
         for segment, _, speaker in annotation.itertracks(yield_label=True)

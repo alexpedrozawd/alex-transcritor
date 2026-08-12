@@ -337,20 +337,27 @@ def _mock_live_transcription(monkeypatch, text="alguém falando"):
 
 def test_live_labels_speakers_when_requested(monkeypatch, tmp_path):
     _mock_live_transcription(monkeypatch)
+    # Os turnos voltam relativos ao contexto, que termina no presente: cobrir
+    # o contexto inteiro cobre também o áudio da janela atual.
     monkeypatch.setattr(
         live_server, "diarize_pcm",
-        lambda pcm, token: [(0.0, live_server.WINDOW_S, "SPEAKER_00")],
+        lambda pcm, token: (
+            [(0.0, len(pcm) / live_server.BYTES_PER_SECOND, "SPEAKER_00")],
+            {},
+        ),
     )
     with _client(monkeypatch, tmp_path, hf_token="hf_" + "x" * 30) as client:
         with client.websocket_connect("/v1/live", headers=_headers()) as ws:
             ws.send_json({"language": "pt", "model": "tiny", "diarize": True})
             assert ws.receive_json() == {"status": "ready"}
-            # A diarização roda a cada N janelas — manda o suficiente para
-            # fechar esse ciclo.
-            for _ in range(live_server.DIARIZE_EVERY_N_WINDOWS):
+            # Precisa de áudio suficiente (DIARIZE_MIN_CONTEXT_S) e de fechar
+            # o ciclo de N janelas antes de haver rótulo.
+            janelas = int(live_server.DIARIZE_MIN_CONTEXT_S / live_server.WINDOW_S) + 2
+            rotulos = []
+            for _ in range(janelas * live_server.DIARIZE_EVERY_N_WINDOWS):
                 ws.send_bytes(_live_pcm_window())
-                message = ws.receive_json()
-    assert message["speaker"] == "Pessoa 1"
+                rotulos.append(ws.receive_json()["speaker"])
+    assert "Pessoa 1" in rotulos, rotulos
 
 
 def test_live_without_diarize_flag_never_calls_the_pipeline(monkeypatch, tmp_path):
@@ -358,7 +365,7 @@ def test_live_without_diarize_flag_never_calls_the_pipeline(monkeypatch, tmp_pat
     chamadas = []
     monkeypatch.setattr(
         live_server, "diarize_pcm",
-        lambda pcm, token: chamadas.append(pcm) or [],
+        lambda pcm, token: (chamadas.append(pcm) or [], {}),
     )
     with _client(monkeypatch, tmp_path, hf_token="hf_" + "x" * 30) as client:
         with client.websocket_connect("/v1/live", headers=_headers()) as ws:
@@ -396,7 +403,7 @@ def test_live_diarize_ignored_without_hf_token(monkeypatch, tmp_path):
     _mock_live_transcription(monkeypatch)
     chamadas = []
     monkeypatch.setattr(
-        live_server, "diarize_pcm", lambda pcm, token: chamadas.append(pcm) or [],
+        live_server, "diarize_pcm", lambda pcm, token: (chamadas.append(pcm) or [], {}),
     )
     with _client(monkeypatch, tmp_path, hf_token=None) as client:
         with client.websocket_connect("/v1/live", headers=_headers()) as ws:

@@ -148,3 +148,40 @@ def test_load_model_uses_cuda_device(monkeypatch):
     model = live_server.load_model("small")
     assert model == "fake-model-object"
     assert calls == {"name": "small", "device": "cuda"}
+
+
+# ── contexto da diarização ao vivo ─────────────────────────────────────────────
+
+def test_context_is_never_padded_with_silence():
+    """Regressão medida com áudio real: completar o trecho com silêncio fez o
+    pyannote ver 3 locutores num diálogo de 2 vozes e picotar a mesma voz.
+    Com o áudio cru ele acertou exatamente as duas."""
+    audio = b"\x07\x07" * int(live_server.DIARIZE_MIN_CONTEXT_BYTES // 2)
+    ctx = live_server.context_for_diarization(audio)
+    assert b"\x00\x00" * 100 not in ctx
+    assert len(ctx) <= len(audio)
+
+
+def test_context_is_none_until_there_is_enough_audio():
+    curto = b"\x01\x02" * 100
+    assert live_server.context_for_diarization(curto) is None
+
+
+def test_context_is_quantized_in_steps():
+    """Poucos formatos distintos = poucas otimizações caras de kernel no ROCm."""
+    audio = b"\x01\x02" * (live_server.DIARIZE_MIN_CONTEXT_BYTES)  # bem acima do mínimo
+    ctx = live_server.context_for_diarization(audio)
+    assert len(ctx) % live_server.DIARIZE_STEP_BYTES == 0
+
+
+def test_context_never_exceeds_the_window_and_keeps_the_present():
+    enorme = b"\x09\x09" * live_server.DIARIZE_CONTEXT_BYTES
+    ctx = live_server.context_for_diarization(enorme)
+    assert len(ctx) <= live_server.DIARIZE_CONTEXT_BYTES
+    assert enorme.endswith(ctx)  # o presente fica no fim
+
+
+def test_context_offset_points_to_where_the_context_starts():
+    recebidos = int(100 * live_server.BYTES_PER_SECOND)
+    contexto = int(30 * live_server.BYTES_PER_SECOND)
+    assert live_server.context_offset_s(recebidos, contexto) == 70.0

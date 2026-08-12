@@ -65,10 +65,25 @@ MAX_NO_SPEECH_PROB = 0.6
 DIARIZE_CONTEXT_S = 45.0
 DIARIZE_CONTEXT_BYTES = int(DIARIZE_CONTEXT_S * BYTES_PER_SECOND)
 
+#: Abaixo disso não há material para separar vozes com confiança.
+DIARIZE_MIN_CONTEXT_S = 10.0
+DIARIZE_MIN_CONTEXT_BYTES = int(DIARIZE_MIN_CONTEXT_S * BYTES_PER_SECOND)
+
+#: O contexto cresce em passos, não continuamente: limita quantos formatos de
+#: entrada distintos o ROCm precisa otimizar antes de estabilizar.
+DIARIZE_STEP_S = 5.0
+DIARIZE_STEP_BYTES = int(DIARIZE_STEP_S * BYTES_PER_SECOND)
+
 #: A diarização roda a cada N janelas transcritas, não em todas: ela custa bem
 #: mais que a transcrição de uma janela, e os rótulos mudam devagar. Ajustar
 #: se o atraso crescer — cada aumento aqui reduz o custo por bloco.
 DIARIZE_EVERY_N_WINDOWS = 2
+
+#: Cosseno mínimo entre assinaturas de voz para considerar a mesma pessoa.
+#: Acima disso, o rótulo herda a "Pessoa N" já existente; abaixo, vira uma
+#: pessoa nova. Valor conservador: errar para "pessoa nova" é menos grave que
+#: juntar duas pessoas diferentes sob o mesmo rótulo.
+SPEAKER_SIMILARITY = 0.5
 
 
 def is_silent(window: bytes) -> bool:
@@ -134,6 +149,33 @@ def load_diarization_pipeline(hf_token: str):
     return _pipeline_cache["pipeline"]
 
 
+def context_for_diarization(pcm: bytes) -> bytes | None:
+    """Recorta o trecho recente a ser diarizado, ou ``None`` se for cedo demais.
+
+    **Nunca preencher com silêncio.** Medido com um diálogo de duas vozes:
+    completar o trecho até 45 s com silêncio fez o pyannote enxergar 3
+    locutores e picotar a mesma voz; com o áudio cru ele acertou exatamente as
+    duas, nos quatro turnos.
+
+    O tamanho é arredondado para baixo em passos de ``DIARIZE_STEP_S`` porque
+    o MIOpen (ROCm) ajusta kernels por formato de entrada, e cada formato novo
+    custa caro na primeira vez — medido em até 9 s, contra 0,2 s depois. Em
+    passos, existem poucos formatos possíveis, e a partir de
+    ``DIARIZE_CONTEXT_S`` o tamanho fica fixo pelo resto da sessão.
+    """
+    usable = min(len(pcm), DIARIZE_CONTEXT_BYTES)
+    steps = usable // DIARIZE_STEP_BYTES
+    size = steps * DIARIZE_STEP_BYTES
+    if size < DIARIZE_MIN_CONTEXT_BYTES:
+        return None  # pouco áudio para separar vozes com confiança
+    return pcm[-size:]
+
+
+def context_offset_s(received_bytes: int, context_bytes: int) -> float:
+    """Tempo absoluto em que começa o trecho de contexto."""
+    return (received_bytes - context_bytes) / BYTES_PER_SECOND
+
+
 def diarize_pcm(pcm: bytes, hf_token: str) -> list[tuple[float, float, str]]:
     """Roda a diarização sobre PCM bruto em memória.
 
@@ -144,14 +186,31 @@ def diarize_pcm(pcm: bytes, hf_token: str) -> list[tuple[float, float, str]]:
     import numpy as np
     import torch
 
+    from . import diarize as diarize_module
+
     pipeline = load_diarization_pipeline(hf_token)
     samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
     waveform = torch.from_numpy(samples).unsqueeze(0)  # (canal, tempo)
-    annotation = pipeline({"waveform": waveform, "sample_rate": 16000})
-    return [
-        (segment.start, segment.end, speaker)
-        for segment, _, speaker in annotation.itertracks(yield_label=True)
-    ]
+    output = pipeline({"waveform": waveform, "sample_rate": 16000})
+    return diarize_module.turns_from_output(output), embeddings_from_output(output)
+
+
+def embeddings_from_output(output) -> dict[str, "object"]:
+    """``{rótulo_bruto: vetor}`` — a assinatura de voz de cada locutor.
+
+    A 4.x devolve uma matriz ``(num_locutores, dimensão)`` na mesma ordem de
+    ``speaker_diarization.labels()``. É o que permite reconhecer a mesma
+    pessoa entre execuções sem depender de ela ter falado no mesmo instante.
+    """
+    embeddings = getattr(output, "speaker_embeddings", None)
+    annotation = getattr(output, "speaker_diarization", None)
+    if embeddings is None or annotation is None:
+        return {}
+    return {
+        label: embeddings[i]
+        for i, label in enumerate(annotation.labels())
+        if i < len(embeddings)
+    }
 
 
 class SpeakerTracker:
@@ -171,28 +230,63 @@ class SpeakerTracker:
     Puro, sem GPU e sem modelo — testável com dados sintéticos.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, similarity_threshold: float = SPEAKER_SIMILARITY) -> None:
         self._history: list[tuple[float, float, str]] = []
+        self._voices: dict[str, object] = {}  # Pessoa N -> vetor de voz
+        self._threshold = similarity_threshold
         self._count = 0
 
     def label_turns(
-        self, turns: list[tuple[float, float, str]]
+        self,
+        turns: list[tuple[float, float, str]],
+        embeddings: dict | None = None,
     ) -> list[tuple[float, float, str]]:
-        """Converte turnos com rótulo bruto em turnos com "Pessoa N" estável."""
+        """Converte turnos com rótulo bruto em turnos com "Pessoa N" estável.
+
+        Casa primeiro pela voz (``embeddings``), que independe de quando a
+        pessoa falou; só cai para a sobreposição temporal quando a voz não
+        está disponível.
+        """
+        embeddings = embeddings or {}
         mapping: dict[str, str] = {}
         for raw in _ordered_raw_labels(turns):
-            intervals = [(s, e) for s, e, label in turns if label == raw]
-            person = self._best_match(intervals, taken=set(mapping.values()))
+            taken = set(mapping.values())
+            person = self._match_by_voice(embeddings.get(raw), taken)
+            if person is None:
+                intervals = [(s, e) for s, e, label in turns if label == raw]
+                person = self._best_match(intervals, taken)
             if person is None:
                 self._count += 1
                 person = f"Pessoa {self._count}"
             mapping[raw] = person
+            if raw in embeddings:
+                self._remember_voice(person, embeddings[raw])
 
         labeled = [(s, e, mapping[raw]) for s, e, raw in turns]
         # O histórico guarda só a rodada mais recente: é o que descreve os
         # instantes que a próxima execução vai reencontrar na sobreposição.
         self._history = labeled
         return labeled
+
+    def _match_by_voice(self, embedding, taken: set[str]) -> str | None:
+        if embedding is None or not self._voices:
+            return None
+        melhor, melhor_sim = None, self._threshold
+        for person, known in self._voices.items():
+            if person in taken:
+                continue
+            sim = _cosine(embedding, known)
+            if sim >= melhor_sim:
+                melhor, melhor_sim = person, sim
+        return melhor
+
+    def _remember_voice(self, person: str, embedding) -> None:
+        """Média com o que já se sabe da voz — mais amostras, menos ruído."""
+        import numpy as np
+
+        atual = self._voices.get(person)
+        vetor = np.asarray(embedding, dtype="float64")
+        self._voices[person] = vetor if atual is None else (np.asarray(atual) + vetor) / 2.0
 
     def _best_match(
         self, intervals: list[tuple[float, float]], taken: set[str]
@@ -208,6 +302,17 @@ class SpeakerTracker:
         if not scores:
             return None
         return max(scores, key=scores.get)
+
+
+def _cosine(a, b) -> float:
+    """Similaridade de cosseno entre duas assinaturas de voz."""
+    import numpy as np
+
+    va, vb = np.asarray(a, dtype="float64"), np.asarray(b, dtype="float64")
+    na, nb = np.linalg.norm(va), np.linalg.norm(vb)
+    if na == 0 or nb == 0:
+        return 0.0
+    return float(np.dot(va, vb) / (na * nb))
 
 
 def _ordered_raw_labels(turns: list[tuple[float, float, str]]) -> list[str]:

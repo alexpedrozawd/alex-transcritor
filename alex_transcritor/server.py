@@ -276,6 +276,10 @@ class JobManager:
         return diarize.merge_with_transcript(whisper_data["segments"], turns)
 
 
+class _SemContexto(Exception):
+    """Ainda não há áudio suficiente para diarizar — não é erro de verdade."""
+
+
 def _ip_allowed(client_host: str | None, allowed_ip: str) -> bool:
     return not allowed_ip or client_host == allowed_ip
 
@@ -502,17 +506,23 @@ def create_app() -> FastAPI:
                 continue
             windows_done += 1
             if diarizing and not diarize_failed and windows_done % live_server.DIARIZE_EVERY_N_WINDOWS == 0:
+                contexto = live_server.context_for_diarization(bytes(rolling))
                 try:
-                    # O trecho deslizante começa em algum ponto do passado: os
-                    # turnos voltam relativos a ele e precisam virar tempo
-                    # absoluto da sessão para casar com os segmentos do texto.
-                    offset_s = (received_bytes - len(rolling)) / live_server.BYTES_PER_SECOND
-                    raw_turns = await asyncio.to_thread(
-                        live_server.diarize_pcm, bytes(rolling), manager.hf_token
+                    if contexto is None:
+                        raise _SemContexto
+                    # O trecho deslizante termina no presente: os turnos voltam
+                    # relativos a ele e precisam virar tempo absoluto da sessão
+                    # para casar com os segmentos do texto.
+                    offset_s = live_server.context_offset_s(received_bytes, len(contexto))
+                    raw_turns, voices = await asyncio.to_thread(
+                        live_server.diarize_pcm, contexto, manager.hf_token
                     )
                     speaker_turns = tracker.label_turns(
-                        [(s + offset_s, e + offset_s, who) for s, e, who in raw_turns]
+                        [(s + offset_s, e + offset_s, who) for s, e, who in raw_turns],
+                        voices,
                     )
+                except _SemContexto:
+                    pass  # ainda é cedo na gravação; tenta de novo no próximo ciclo
                 except Exception as exc:
                     # Não derruba a sessão: segue sem rótulos, avisando uma vez.
                     diarize_failed = True
