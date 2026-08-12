@@ -75,3 +75,43 @@ def test_special_characters_are_escaped_not_interpreted_as_html(qtbot):
     panel.append_segment(_seg("<script>alert(1)</script> & outros <tags>"))
     assert "<script>" not in panel._text.toHtml()
     assert "alert(1)" in panel._text.toPlainText()
+
+
+def test_error_does_not_erase_already_transcribed_text(qtbot):
+    """Regressão: um erro não fatal (ex.: diarização caindo no meio da sessão)
+    apagava a caixa inteira, sumindo com texto bom que o usuário estava lendo."""
+    panel = LivePanel()
+    qtbot.addWidget(panel)
+    panel.append_segment(_seg("primeira frase importante"))
+    panel.append_segment(_seg("segunda frase importante"))
+    panel.show_unavailable("Identificação de locutor indisponível")
+    texto = panel._text.toPlainText()
+    assert "primeira frase importante" in texto
+    assert "segunda frase importante" in texto
+    assert "Identificação de locutor indisponível" in texto
+
+
+def test_repeated_errors_are_not_duplicated(qtbot):
+    panel = LivePanel()
+    qtbot.addWidget(panel)
+    panel.append_segment(_seg("texto"))
+    for _ in range(4):
+        panel.show_unavailable("mesma falha")
+    assert panel._text.toPlainText().count("mesma falha") == 1
+
+
+def test_error_before_any_text_still_replaces_the_box(qtbot):
+    panel = LivePanel()
+    qtbot.addWidget(panel)
+    panel.show_unavailable("faster-whisper não instalado")
+    assert "faster-whisper não instalado" in panel._text.toPlainText()
+
+
+def test_clear_also_clears_notices(qtbot):
+    panel = LivePanel()
+    qtbot.addWidget(panel)
+    panel.append_segment(_seg("texto"))
+    panel.show_unavailable("falha antiga")
+    panel.clear()
+    panel.append_segment(_seg("gravação nova"))
+    assert "falha antiga" not in panel._text.toPlainText()

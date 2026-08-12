@@ -783,3 +783,19 @@ def test_saved_dir_follows_the_recording_not_the_field(window, popen, no_thread,
     window._stop_clicked()
     assert cfg.get_last_output_dir() == str(tmp_path / "original")
     assert Path(window.txt_path).parent == Path(window.audio_path).parent
+
+
+def test_remote_live_engine_receives_the_configured_model(
+    window, popen, live_thread, remote_live_thread, tmp_path
+):
+    """O campo "Modelo ao vivo" precisa ter efeito no modo servidor — antes
+    era ignorado e o servidor usava sempre o padrão dele, deixando a opção
+    visível na tela sem nenhum efeito."""
+    cfg.update_config(
+        live_transcription=True, transcription_backend="remote",
+        remote_url="http://100.84.64.122:8300", remote_token="x" * 32,
+        live_model="medium",
+    )
+    window.input_dir.setText(str(tmp_path))
+    window._start_recording()
+    assert remote_live_thread.call_args.kwargs["model"] == "medium"

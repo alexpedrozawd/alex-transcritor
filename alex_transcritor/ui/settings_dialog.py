@@ -193,11 +193,10 @@ class SettingsDialog(QDialog):
         form.addRow(QLabel(""), self.check_live)
         form.addRow(QLabel("MODELO AO VIVO"), self.combo_live_model)
         form.addRow(self._hint(
-            "Experimental, roda em blocos de alguns segundos (não é legenda "
-            "instantânea). Usa a GPU local quando o passe final é remoto (ela "
-            "fica ociosa nesse caso); roda em CPU só quando o passe final "
-            "também é local, para não disputar VRAM. Exige o pacote opcional "
-            "faster-whisper instalado."
+            "Roda em blocos de alguns segundos (não é legenda instantânea). "
+            "No modo servidor, o áudio é transcrito lá, na GPU. No modo local, "
+            "roda em CPU aqui e exige o pacote opcional faster-whisper — nesse "
+            "caso vale escolher um modelo menor, como 'tiny'."
         ))
 
         self._sync_backend_fields()

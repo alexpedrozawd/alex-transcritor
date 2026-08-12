@@ -22,13 +22,16 @@ try:
 except ImportError:  # pragma: no cover — exercitado via testes com monkeypatch
     websocket = None
 
-from .live_windowing import LiveSegment
+from .live_windowing import WINDOW_BYTES, LiveSegment
 
 READ_CHUNK_BYTES = 4096
 
 #: Mesma lógica de proteção contra acúmulo do motor local (live.py) — numa
 #: rede lenta/instável, nunca vale a pena mandar áudio muito atrasado.
-MAX_QUEUED_CHUNKS = 50
+#: Derivado da janela, nunca fixo: um teto fixo de 50 deixava só 3 blocos de
+#: folga sobre os 47 que uma janela de 6 s ocupa, e descartava áudio bom ao
+#: menor engasgo da rede.
+MAX_QUEUED_CHUNKS = 3 * (WINDOW_BYTES // READ_CHUNK_BYTES)
 
 CONNECT_TIMEOUT_S = 15.0
 

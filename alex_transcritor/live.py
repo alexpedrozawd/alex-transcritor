@@ -55,10 +55,13 @@ READ_CHUNK_BYTES = 4096
 #: teto, uma transcrição lenta nunca alcança o presente: a cada janela
 #: processada, mais áudio novo já se acumulou, e ao clicar Parar o app fica
 #: minutos "catching up" um atraso que não serve mais pra nada.
-#: Alto o bastante para tolerar a rajada normal de uma única janela cheia
-#: chegando de uma vez (~23 blocos de 4096 bytes) sem descartar áudio válido
-#: — ~6s de áudio pendente com READ_CHUNK_BYTES=4096 a 32000 bytes/s.
-MAX_QUEUED_CHUNKS = 50
+#:
+#: **Derivado da janela, nunca fixo.** Encher uma janela já ocupa
+#: ``WINDOW_BYTES / READ_CHUNK_BYTES`` blocos (47 com a janela de 6 s), então
+#: um teto fixo de 50 deixava só 3 de folga e descartava áudio bom ao menor
+#: atraso. Três janelas de folga absorvem a variação normal e ainda limitam o
+#: atraso a poucos segundos.
+MAX_QUEUED_CHUNKS = 3 * (WINDOW_BYTES // READ_CHUNK_BYTES)
 
 
 class LiveTranscriber(QThread):

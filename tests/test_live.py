@@ -221,3 +221,12 @@ def test_falls_back_to_skipping_when_backlog_grows_too_large(qtbot, monkeypatch)
     assert transcriber.wait(3000), (
         "não saiu a tempo — parece estar processando o acúmulo inteiro em vez de descartá-lo"
     )
+
+
+def test_backlog_limit_fits_a_full_window():
+    """Regressão: com o teto fixo em 50, encher uma janela de 6s (47 blocos)
+    deixava 3 de folga e o menor atraso já descartava áudio bom."""
+    blocos_por_janela = live.WINDOW_BYTES // live.READ_CHUNK_BYTES
+    assert live.MAX_QUEUED_CHUNKS >= 2 * blocos_por_janela, (
+        f"teto {live.MAX_QUEUED_CHUNKS} não comporta nem 2 janelas de {blocos_por_janela} blocos"
+    )

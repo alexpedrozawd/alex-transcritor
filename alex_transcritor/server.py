@@ -434,15 +434,25 @@ def create_app() -> FastAPI:
         except Exception:
             await websocket.close(code=4400)
             return
-        language = opening.get("language", "pt") if isinstance(opening, dict) else "pt"
-        model_name = opening.get("model", "small") if isinstance(opening, dict) else "small"
-        initial_prompt = opening.get("initial_prompt", "") if isinstance(opening, dict) else ""
-        if len(initial_prompt) > 700:  # mesmo teto do passe em lote
-            initial_prompt = initial_prompt[:700]
+        if not isinstance(opening, dict):
+            opening = {}
+        # Mesma validação do passe em lote: `whisper.load_model` aceita tanto um
+        # nome conhecido quanto um CAMINHO DE ARQUIVO, então um valor não
+        # validado aqui viraria leitura de arquivo arbitrário no servidor.
+        language = opening.get("language", "pt")
+        model_name = opening.get("model", "small")
+        if model_name not in WHISPER_MODELS:
+            await websocket.send_json({"error": "Modelo inválido."})
+            await websocket.close(code=4422)
+            return
+        if language not in ("auto", "pt", "en", "es"):
+            await websocket.send_json({"error": "Idioma inválido."})
+            await websocket.close(code=4422)
+            return
+        initial_prompt = str(opening.get("initial_prompt", ""))[:700]  # mesmo teto do lote
         # Diarização ao vivo é best-effort: sem token configurado, o resto da
         # sessão continua funcionando normalmente, só sem rótulos de locutor.
-        want_speakers = bool(opening.get("diarize")) if isinstance(opening, dict) else False
-        diarizing = want_speakers and bool(manager.hf_token)
+        diarizing = bool(opening.get("diarize")) and bool(manager.hf_token)
 
         try:
             model = await asyncio.to_thread(live_server.load_model, model_name)

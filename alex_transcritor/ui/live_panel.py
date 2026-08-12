@@ -45,9 +45,12 @@ class LivePanel(QWidget):
 
         #: (locutor, texto) — locutor vazio quando não há diarização.
         self._lines: list[tuple[str, str]] = []
+        #: Avisos de falha não fatal, mostrados ao pé do texto.
+        self._notices: list[str] = []
 
     def clear(self) -> None:
         self._lines = []
+        self._notices = []
         self._text.clear()
 
     def append_segment(self, seg: LiveSegment) -> None:
@@ -55,6 +58,16 @@ class LivePanel(QWidget):
         self._render()
 
     def show_unavailable(self, reason: str) -> None:
+        """Aviso de falha, **sem apagar o que já foi transcrito**.
+
+        Nem todo erro é fatal: a diarização pode falhar no meio da sessão e a
+        transcrição continuar normalmente. Substituir a caixa inteira nesse
+        caso apagaria da tela texto bom que o usuário estava lendo.
+        """
+        if self._lines:
+            self._notices.append(reason)
+            self._render()
+            return
         self._text.setPlainText(f"Transcrição ao vivo indisponível: {reason}")
 
     def show_status(self, message: str) -> None:
@@ -81,6 +94,9 @@ class LivePanel(QWidget):
         if atual_texto:
             blocos.append(_bloco(atual_locutor, atual_texto))
 
-        self._text.setHtml("<br><br>".join(blocos) if len(blocos) > 1 else "".join(blocos))
+        corpo = "<br><br>".join(blocos) if len(blocos) > 1 else "".join(blocos)
+        for aviso in dict.fromkeys(self._notices):  # sem repetir o mesmo aviso
+            corpo += f'<br><br><i style="color:#c98a8a;">⚠ {html.escape(aviso)}</i>'
+        self._text.setHtml(corpo)
         bar = self._text.verticalScrollBar()
         bar.setValue(bar.maximum())

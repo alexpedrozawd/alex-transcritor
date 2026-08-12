@@ -435,6 +435,7 @@ class MainWindow(QMainWindow):
                     remote_url=config["remote_url"],
                     token=config["remote_token"],
                     language=config["language"],
+                    model=config["live_model"],
                     # Mesmo vocabulário do passe final: nomes próprios e jargão
                     # erram muito menos quando vão como contexto.
                     initial_prompt=get_initial_prompt(),

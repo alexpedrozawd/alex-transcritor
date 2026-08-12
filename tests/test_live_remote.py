@@ -212,14 +212,17 @@ def test_drops_backlog_when_network_falls_behind(qtbot, monkeypatch):
 
     class _SlowFakeWS(_FakeWS):
         def send_bytes(self, b):
-            time.sleep(0.05)
+            time.sleep(0.005)
             super().send_bytes(b)
 
     fake_ws = _SlowFakeWS()
     monkeypatch.setattr(live_remote.websocket, "create_connection", lambda *a, **k: fake_ws)
-    huge_payload = b"\x00" * (live_remote.READ_CHUNK_BYTES * 200)
+    # Bem acima do teto de acúmulo, que é derivado da janela — fixar um número
+    # aqui quebrava o teste sempre que a janela mudava de tamanho.
+    blocos = live_remote.MAX_QUEUED_CHUNKS * 3
+    huge_payload = b"\x00" * (live_remote.READ_CHUNK_BYTES * blocos)
     transcriber = RemoteLiveTranscriber(io.BytesIO(huge_payload), "http://host:8300", "tok")
     transcriber.start()
-    assert transcriber.wait(5000), "não terminou a tempo — parece estar mandando o acúmulo inteiro"
+    assert transcriber.wait(15000), "não terminou a tempo — parece estar mandando o acúmulo inteiro"
     total_sent = sum(len(b) for b in fake_ws.sent_bytes)
     assert total_sent < len(huge_payload)

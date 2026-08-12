@@ -442,3 +442,46 @@ def test_live_transcribe_failure_sends_error_but_keeps_session_open(monkeypatch,
             ws.send_bytes(_live_pcm_window())
             message = ws.receive_json()
     assert "janela corrompida" in message["error"]
+
+
+def test_live_rejects_model_that_is_not_in_the_allowlist(monkeypatch, tmp_path):
+    """Segurança: `whisper.load_model` aceita nome conhecido OU caminho de
+    arquivo. Sem validar, um valor arbitrário viraria leitura de arquivo no
+    servidor. O passe em lote já validava; o WS não."""
+    carregados = []
+    monkeypatch.setattr(
+        live_server, "load_model", lambda name: carregados.append(name) or "fake",
+    )
+    with _client(monkeypatch, tmp_path) as client:
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect("/v1/live", headers=_headers()) as ws:
+                ws.send_json({"model": "/etc/passwd", "language": "pt"})
+                assert "inválido" in ws.receive_json()["error"]
+                ws.receive_json()   # provoca o fechamento
+    assert carregados == []  # nunca chegou ao carregador
+
+
+def test_live_rejects_unknown_language(monkeypatch, tmp_path):
+    monkeypatch.setattr(live_server, "load_model", lambda name: "fake")
+    with _client(monkeypatch, tmp_path) as client:
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect("/v1/live", headers=_headers()) as ws:
+                ws.send_json({"model": "tiny", "language": "klingon"})
+                assert "inválido" in ws.receive_json()["error"]
+                ws.receive_json()
+
+
+def test_live_accepts_every_model_offered_in_the_ui(monkeypatch, tmp_path):
+    """O que a UI oferece precisa ser aceito pelo servidor — senão a opção
+    existe na tela e falha na hora de usar."""
+    from alex_transcritor.constants import WHISPER_MODELS
+    monkeypatch.setattr(live_server, "load_model", lambda name: "fake")
+    monkeypatch.setattr(
+        live_server, "transcribe_window",
+        lambda model, window, language, initial_prompt="": [],
+    )
+    with _client(monkeypatch, tmp_path) as client:
+        for modelo in WHISPER_MODELS:
+            with client.websocket_connect("/v1/live", headers=_headers()) as ws:
+                ws.send_json({"model": modelo, "language": "pt"})
+                assert ws.receive_json() == {"status": "ready"}, modelo
