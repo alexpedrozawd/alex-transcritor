@@ -22,24 +22,26 @@ BYTES_PER_SECOND = 16000 * 2
 #: Escolhido medindo taxa de erro de palavra (WER) contra texto conhecido, com
 #: o modelo "turbo" na RX 9070, num áudio de 44 s:
 #:
-#:   janela 12 s → 9,4% de erro (atraso ~13 s)
+#:   janela 12 s → 9,4% de erro (atraso ~13 s)   ← escolhido
 #:   janela 16 s → 25,5%
 #:   janela 20 s → 20,8%
 #:   janela 25 s → 9,4%
-#:   janela 30 s → 5,7% de erro (atraso ~31 s)   ← escolhido
+#:   janela 30 s → 5,7% de erro (atraso ~31 s)
 #:
-#: 30 s é exatamente o contexto com que o Whisper foi treinado, e é onde ele
-#: erra menos — o mesmo patamar do passe em lote (5,8% medido com voz real).
-#: O usuário escolheu fidelidade sobre latência: o texto aparece cerca de meio
-#: minuto depois de falado, servindo para ler o que foi dito, não para reagir
-#: na hora. Para priorizar velocidade, 12 s dá ~13 s de atraso com 9,4% de erro.
+#: 30 s é o contexto de treino do Whisper e onde ele erra menos — mesmo
+#: patamar do passe em lote (5,8% com voz real). Ainda assim, 12 s é a
+#: escolha certa **para o uso real**: o painel existe para acompanhar a
+#: reunião enquanto o assunto está em pauta. Com 30 s de janela, somados ao
+#: tempo de análise, o comentário chegaria quase um minuto depois — o mesmo
+#: problema que motivou o projeto. Os 3,7 pontos de erro a mais custam bem
+#: menos que 18 s de defasagem.
 #:
 #: A sobreposição não é só contexto acústico: é o que evita cortar palavra no
 #: meio da emenda entre janelas. Curta demais parte palavras; longa demais faz
 #: o mesmo trecho ser transcrito duas vezes, com resultados diferentes — foi
 #: exatamente isso que apareceu em uso como "trocou palavras simples".
-WINDOW_S = 30.0
-OVERLAP_S = 6.0
+WINDOW_S = 12.0
+OVERLAP_S = 3.0
 WINDOW_BYTES = int(WINDOW_S * BYTES_PER_SECOND)
 OVERLAP_BYTES = int(OVERLAP_S * BYTES_PER_SECOND)
 ADVANCE_BYTES = WINDOW_BYTES - OVERLAP_BYTES
