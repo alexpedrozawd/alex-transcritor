@@ -74,10 +74,13 @@ DIARIZE_MIN_CONTEXT_BYTES = int(DIARIZE_MIN_CONTEXT_S * BYTES_PER_SECOND)
 DIARIZE_STEP_S = 5.0
 DIARIZE_STEP_BYTES = int(DIARIZE_STEP_S * BYTES_PER_SECOND)
 
-#: A diarização roda a cada N janelas transcritas, não em todas: ela custa bem
-#: mais que a transcrição de uma janela, e os rótulos mudam devagar. Ajustar
-#: se o atraso crescer — cada aumento aqui reduz o custo por bloco.
-DIARIZE_EVERY_N_WINDOWS = 2
+#: A diarização roda a cada N janelas transcritas. **Precisa ser 1 sempre que
+#: o avanço entre janelas se aproximar de ``DIARIZE_CONTEXT_S``**: com N=2 e a
+#: janela de 30 s, passariam 48 s entre execuções, mais que os 45 s de
+#: contexto — abrindo lacunas de áudio que nenhuma execução veria, e sem
+#: sobreposição para o SpeakerTracker casar as vozes. Medido em 0,62 s por
+#: execução, é barato perto de uma janela de 30 s.
+DIARIZE_EVERY_N_WINDOWS = 1
 
 #: Cosseno mínimo entre assinaturas de voz para considerar a mesma pessoa.
 #: Acima disso, o rótulo herda a "Pessoa N" já existente; abaixo, vira uma

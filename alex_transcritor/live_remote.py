@@ -60,7 +60,7 @@ class RemoteLiveTranscriber(QThread):
         remote_url: str,
         token: str,
         language: str = "pt",
-        model: str = "small",
+        model: str = "turbo",
         initial_prompt: str = "",
         diarize: bool = False,
     ) -> None:

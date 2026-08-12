@@ -440,7 +440,7 @@ def create_app() -> FastAPI:
         # nome conhecido quanto um CAMINHO DE ARQUIVO, então um valor não
         # validado aqui viraria leitura de arquivo arbitrário no servidor.
         language = opening.get("language", "pt")
-        model_name = opening.get("model", "small")
+        model_name = opening.get("model", "turbo")
         if model_name not in WHISPER_MODELS:
             await websocket.send_json({"error": "Modelo inválido."})
             await websocket.close(code=4422)

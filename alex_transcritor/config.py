@@ -38,9 +38,10 @@ DEFAULTS: dict = {
     REMOTE_TOKEN_KEY: "",
     "diarize_speakers": False,  # opt-in, remoto apenas — exige token HF configurado no servidor
     "live_transcription": False,  # opt-in — remoto usa websocket-client; local exige faster-whisper
-    # "small" equilibra qualidade e velocidade no caminho principal (servidor
-    # com GPU). Em modo local, que roda em CPU, pode valer baixar para "tiny".
-    "live_model": "small",
+    # "turbo": o mesmo do passe final, que produz texto limpo. Medido contra
+    # texto conhecido, ele bate "small" com folga no ao vivo (8,8% contra
+    # 30,9% de erro). Em modo local, que roda em CPU, vale baixar para "tiny".
+    "live_model": "turbo",
 }
 
 

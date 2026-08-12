@@ -17,19 +17,29 @@ BYTES_PER_SECOND = 16000 * 2
 #:
 #: O piso de latência é WINDOW_S + tempo de inferência, mas encurtar a janela
 #: **destrói a qualidade**: o Whisper foi treinado com 30 s de contexto e
-#: degrada muito com trechos curtos isolados. Medido na RX 9070 com a mesma
-#: frase, modelo "small":
+#: degrada muito com trechos curtos isolados.
 #:
-#:   2 s → "Vamos começar a reunir a união" / "pois alemos sob o cronóter"
-#:   4 s → "Bom dia a todos. Vamos começar a reunião de hoje."
-#:   6 s → frase inteira correta, incluindo "o primeiro ponto é o relatório"
+#: Escolhido medindo taxa de erro de palavra (WER) contra texto conhecido, com
+#: o modelo "turbo" na RX 9070, num áudio de 44 s:
 #:
-#: 6 s é o valor escolhido: foi o único que transcreveu a frase inteira sem
-#: erro no teste acima. Texto ilegível não serve para nada, por mais rápido
-#: que chegue — e ~6 s de atraso ainda dá para acompanhar uma reunião.
-#: Baixar para 4 s troca precisão por ~2 s de latência, se preferir.
-WINDOW_S = 6.0
-OVERLAP_S = 1.5
+#:   janela 12 s → 9,4% de erro (atraso ~13 s)
+#:   janela 16 s → 25,5%
+#:   janela 20 s → 20,8%
+#:   janela 25 s → 9,4%
+#:   janela 30 s → 5,7% de erro (atraso ~31 s)   ← escolhido
+#:
+#: 30 s é exatamente o contexto com que o Whisper foi treinado, e é onde ele
+#: erra menos — o mesmo patamar do passe em lote (5,8% medido com voz real).
+#: O usuário escolheu fidelidade sobre latência: o texto aparece cerca de meio
+#: minuto depois de falado, servindo para ler o que foi dito, não para reagir
+#: na hora. Para priorizar velocidade, 12 s dá ~13 s de atraso com 9,4% de erro.
+#:
+#: A sobreposição não é só contexto acústico: é o que evita cortar palavra no
+#: meio da emenda entre janelas. Curta demais parte palavras; longa demais faz
+#: o mesmo trecho ser transcrito duas vezes, com resultados diferentes — foi
+#: exatamente isso que apareceu em uso como "trocou palavras simples".
+WINDOW_S = 30.0
+OVERLAP_S = 6.0
 WINDOW_BYTES = int(WINDOW_S * BYTES_PER_SECOND)
 OVERLAP_BYTES = int(OVERLAP_S * BYTES_PER_SECOND)
 ADVANCE_BYTES = WINDOW_BYTES - OVERLAP_BYTES
