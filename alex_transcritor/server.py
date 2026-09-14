@@ -479,76 +479,88 @@ def create_app() -> FastAPI:
         tracker = live_server.SpeakerTracker()
         diarize_failed = False
 
-        while True:
-            message = await websocket.receive()
-            if message.get("type") == "websocket.disconnect":
-                break
-            data = message.get("bytes")
-            if not data:
-                continue
-            received_bytes += len(data)
-            if diarizing:
-                rolling.extend(data)
-                del rolling[:-live_server.DIARIZE_CONTEXT_BYTES]
-            buffer, window = live_server.accumulate(buffer, data)
-            if window is None:
-                continue
-            if live_server.is_silent(window):
-                # Sem fala: nem chega ao modelo. Alimentar silêncio ao Whisper
-                # é a origem clássica de alucinação, e pular economiza GPU.
-                #
-                # `first_window` continua True de propósito: ele existe só para
-                # descartar texto da sobreposição que a janela anterior já
-                # emitiu. Se nada foi emitido, não há o que deduplicar — e
-                # marcá-lo aqui faria a primeira fala depois de um silêncio
-                # perder o começo, justamente o caso de uma gravação que
-                # começa em silêncio.
-                elapsed_s += live_server.ADVANCE_BYTES / live_server.BYTES_PER_SECOND
-                continue
-            try:
-                raw_segments = await asyncio.to_thread(
-                    live_server.transcribe_window, model, window, language, initial_prompt
-                )
-            except Exception as exc:
-                await websocket.send_json({"error": str(exc)})
+        try:
+            while True:
+                message = await websocket.receive()
+                if message.get("type") == "websocket.disconnect":
+                    break
+                data = message.get("bytes")
+                if not data:
+                    continue
+                received_bytes += len(data)
+                if diarizing:
+                    rolling.extend(data)
+                    del rolling[:-live_server.DIARIZE_CONTEXT_BYTES]
+                buffer, window = live_server.accumulate(buffer, data)
+                if window is None:
+                    continue
+                if live_server.is_silent(window):
+                    # Sem fala: nem chega ao modelo. Alimentar silêncio ao Whisper
+                    # é a origem clássica de alucinação, e pular economiza GPU.
+                    #
+                    # `first_window` continua True de propósito: ele existe só para
+                    # descartar texto da sobreposição que a janela anterior já
+                    # emitiu. Se nada foi emitido, não há o que deduplicar — e
+                    # marcá-lo aqui faria a primeira fala depois de um silêncio
+                    # perder o começo, justamente o caso de uma gravação que
+                    # começa em silêncio.
+                    elapsed_s += live_server.ADVANCE_BYTES / live_server.BYTES_PER_SECOND
+                    continue
+                try:
+                    raw_segments = await asyncio.to_thread(
+                        live_server.transcribe_window, model, window, language, initial_prompt
+                    )
+                except Exception as exc:
+                    await websocket.send_json({"error": str(exc)})
+                    elapsed_s += live_server.ADVANCE_BYTES / live_server.BYTES_PER_SECOND
+                    first_window = False
+                    continue
+                windows_done += 1
+                if diarizing and not diarize_failed and windows_done % live_server.DIARIZE_EVERY_N_WINDOWS == 0:
+                    contexto = live_server.context_for_diarization(bytes(rolling))
+                    try:
+                        if contexto is None:
+                            raise _SemContexto
+                        # O trecho deslizante termina no presente: os turnos voltam
+                        # relativos a ele e precisam virar tempo absoluto da sessão
+                        # para casar com os segmentos do texto.
+                        offset_s = live_server.context_offset_s(received_bytes, len(contexto))
+                        raw_turns, voices = await asyncio.to_thread(
+                            live_server.diarize_pcm, contexto, manager.hf_token
+                        )
+                        speaker_turns = tracker.label_turns(
+                            [(s + offset_s, e + offset_s, who) for s, e, who in raw_turns],
+                            voices,
+                        )
+                    except _SemContexto:
+                        pass  # ainda é cedo na gravação; tenta de novo no próximo ciclo
+                    except Exception as exc:
+                        # Não derruba a sessão: segue sem rótulos, avisando uma vez.
+                        diarize_failed = True
+                        await websocket.send_json(
+                            {"error": f"Identificação de locutor indisponível: {exc}"}
+                        )
+
+                for seg in live_server.segments_to_live_segments(raw_segments, elapsed_s, first_window):
+                    await websocket.send_json({
+                        "text": seg.text,
+                        "start_s": seg.start_s,
+                        "end_s": seg.end_s,
+                        "is_final": seg.is_final,
+                        "speaker": live_server.speaker_for(seg.start_s, seg.end_s, speaker_turns),
+                    })
                 elapsed_s += live_server.ADVANCE_BYTES / live_server.BYTES_PER_SECOND
                 first_window = False
-                continue
-            windows_done += 1
-            if diarizing and not diarize_failed and windows_done % live_server.DIARIZE_EVERY_N_WINDOWS == 0:
-                contexto = live_server.context_for_diarization(bytes(rolling))
-                try:
-                    if contexto is None:
-                        raise _SemContexto
-                    # O trecho deslizante termina no presente: os turnos voltam
-                    # relativos a ele e precisam virar tempo absoluto da sessão
-                    # para casar com os segmentos do texto.
-                    offset_s = live_server.context_offset_s(received_bytes, len(contexto))
-                    raw_turns, voices = await asyncio.to_thread(
-                        live_server.diarize_pcm, contexto, manager.hf_token
-                    )
-                    speaker_turns = tracker.label_turns(
-                        [(s + offset_s, e + offset_s, who) for s, e, who in raw_turns],
-                        voices,
-                    )
-                except _SemContexto:
-                    pass  # ainda é cedo na gravação; tenta de novo no próximo ciclo
-                except Exception as exc:
-                    # Não derruba a sessão: segue sem rótulos, avisando uma vez.
-                    diarize_failed = True
-                    await websocket.send_json(
-                        {"error": f"Identificação de locutor indisponível: {exc}"}
-                    )
-
-            for seg in live_server.segments_to_live_segments(raw_segments, elapsed_s, first_window):
-                await websocket.send_json({
-                    "text": seg.text,
-                    "start_s": seg.start_s,
-                    "end_s": seg.end_s,
-                    "is_final": seg.is_final,
-                    "speaker": live_server.speaker_for(seg.start_s, seg.end_s, speaker_turns),
-                })
-            elapsed_s += live_server.ADVANCE_BYTES / live_server.BYTES_PER_SECOND
-            first_window = False
+        finally:
+            # A VRAM volta a ficar livre assim que a reunião acaba. Sem isto o
+            # processo segura os ~7,4 GB do whisper até ser reiniciado, mesmo
+            # sem sessão nenhuma — e a regra desta máquina é que a GPU fica
+            # livre para o que o dono abrir em seguida.
+            # Síncrono de propósito: um `await` aqui não completa quando a task
+            # está sendo cancelada (cliente que some, shutdown do servidor) — e
+            # esses são justamente os encerramentos em que a GPU mais fica
+            # presa. `empty_cache` custa milissegundos, e a sessão já acabou.
+            model = None
+            live_server.release_gpu()
 
     return app

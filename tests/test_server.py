@@ -256,6 +256,46 @@ def test_live_transcribes_a_window_and_returns_segment(monkeypatch, tmp_path):
     }
 
 
+def test_live_releases_the_gpu_when_the_session_ends(monkeypatch, tmp_path):
+    """A VRAM tem que voltar ao fim da sessão, não no próximo restart.
+
+    Soltar a referência ao modelo não basta: o caching allocator do PyTorch
+    segura os blocos já reservados. Medido em 2026-08-12 — o processo ficou com
+    7,4 GB presos por horas, sem nenhuma sessão ativa, numa GPU disputada com
+    o KDE, o Steam, o ap-ai-studio e o Ollama do ap-tech-team.
+    """
+    monkeypatch.setattr(live_server, "load_model", lambda name: "fake-model")
+    liberou = []
+    monkeypatch.setattr(live_server, "release_gpu", lambda: liberou.append(True))
+
+    with _client(monkeypatch, tmp_path) as client:
+        with client.websocket_connect("/v1/live", headers=_headers()) as ws:
+            ws.send_json({"language": "pt", "model": "tiny"})
+            assert ws.receive_json() == {"status": "ready"}
+    assert liberou == [True]
+
+
+def test_live_releases_the_gpu_even_when_the_session_blows_up(monkeypatch, tmp_path):
+    """Cliente que cai no meio da reunião também devolve a GPU — é o caminho
+    normal de encerramento aqui, não a exceção."""
+    monkeypatch.setattr(live_server, "load_model", lambda name: "fake-model")
+    liberou = []
+    monkeypatch.setattr(live_server, "release_gpu", lambda: liberou.append(True))
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("conexão morreu")
+
+    with _client(monkeypatch, tmp_path) as client:
+        with pytest.raises(RuntimeError):
+            with client.websocket_connect("/v1/live", headers=_headers()) as ws:
+                ws.send_json({"language": "pt", "model": "tiny"})
+                assert ws.receive_json() == {"status": "ready"}
+                monkeypatch.setattr(live_server, "accumulate", explode)
+                ws.send_bytes(_live_pcm_window())
+                ws.receive_json()
+    assert liberou == [True]
+
+
 def test_live_skips_silent_windows_without_touching_the_model(monkeypatch, tmp_path):
     """Alimentar silêncio ao Whisper é a origem clássica de alucinação — janela
     muda nem chega ao modelo. Também economiza GPU."""

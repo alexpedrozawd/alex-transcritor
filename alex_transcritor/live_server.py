@@ -28,6 +28,7 @@ __all__ = [
     "LiveSegment",
     "accumulate",
     "load_model",
+    "release_gpu",
     "should_emit",
     "transcribe_window",
 ]
@@ -44,6 +45,31 @@ def load_model(model_name: str):
     import whisper
 
     return whisper.load_model(model_name, device="cuda")
+
+
+def release_gpu() -> None:
+    """Devolve a VRAM ao driver depois que a sessão solta o modelo.
+
+    Soltar a referência não basta: o caching allocator do PyTorch guarda os
+    blocos já reservados para reaproveitá-los, e do lado de fora isso aparece
+    como VRAM ocupada — medido em 2026-08-12, 7,4 GB presos por horas sem
+    nenhuma sessão ativa, com o whisper turbo. Numa máquina em que a mesma GPU
+    é disputada por KDE, Steam, ap-ai-studio e o Ollama do ap-tech-team, isso
+    decide o que o dono consegue abrir depois.
+
+    Melhor esforço: se o torch não estiver disponível ou a GPU sumir, a sessão
+    já acabou de qualquer jeito e não há o que salvar.
+    """
+    import gc
+
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 #: Abaixo deste RMS (em áudio normalizado -1..1) a janela é tratada como sem
